@@ -21,6 +21,7 @@ var status:Label
 var population:Label
 var held_buttons={}
 var grounded=true
+var held_shift_locations={}
 
 func _ready()->void:
 	create_input()
@@ -48,7 +49,7 @@ func build_ui()->void:
 	status=Label.new();status.position=Vector2(20,40);status.add_theme_color_override("font_color",Color("bcceca"));layer.add_child(status)
 	var hint=Label.new();hint.position=Vector2(20,620);hint.text="A / D or arrows: walk · Space: jump · S: crouch · Shift: run\nLeft click: punch · Right click: grapple/release · R: release\nRelease the hook to carry momentum. Any movement key recovers a ragdoll.";hint.add_theme_font_size_override("font_size",12);layer.add_child(hint)
 	var buttons=HBoxContainer.new();buttons.position=Vector2(580,640);layer.add_child(buttons)
-	for item in [["◀ Left","move_left"],["Right ▶","move_right"],["Jump","jump"],["Restart","restart_run"]]:
+	for item in [["Left","move_left"],["Right","move_right"],["Jump","jump"],["Restart","restart_run"]]:
 		var button=Button.new();button.text=item[0];button.custom_minimum_size=Vector2(88,40);button.focus_mode=Control.FOCUS_NONE;buttons.add_child(button)
 		button.button_down.connect(func():held_buttons[item[1]]=true;if item[1]=="jump":jump();if item[1]=="restart_run":restart();if ragdoll_active:recover())
 		button.button_up.connect(func():held_buttons[item[1]]=false)
@@ -56,11 +57,16 @@ func build_ui()->void:
 func feet()->Vector2:return actor.position+Vector2(0,72.5)
 
 func restart(seed_value:int=-1)->void:
-	release_hook();actor.position=Vector2(380,World.FLOOR-72.5);actor.velocity=Vector2.ZERO;ragdoll_active=false;loose_nodes.clear();robot.loose_pose={};punch_time=-1;punch_cooldown=0;facing=1;grounded=true;recovery_grace=0.5;held_buttons.clear();creatures.restart(seed_value);status.text="Grappling gun equipped";update_visual()
+	release_hook();actor.get_child(0).set_deferred("disabled",false);actor.position=Vector2(380,World.FLOOR-72.5);actor.velocity=Vector2.ZERO;ragdoll_active=false;loose_nodes.clear();robot.loose_pose={};punch_time=-1;punch_cooldown=0;facing=1;grounded=true;recovery_grace=0.5;held_buttons.clear();creatures.restart(seed_value);status.text="Grappling gun equipped";update_visual()
+	held_shift_locations.clear()
+	for action in ["move_left","move_right","run","jump","crouch"]:Input.action_release(action)
 
-func action_down(action:String)->bool:return Input.is_action_pressed(action)||held_buttons.get(action,false)
+func action_down(action:String)->bool:
+	if action=="run"&&held_shift_locations.values().has(true):return true
+	return Input.is_action_pressed(action)||held_buttons.get(action,false)
 
 func _input(event:InputEvent)->void:
+	if event is InputEventKey&&(event.physical_keycode==KEY_SHIFT||event.keycode==KEY_SHIFT):held_shift_locations[event.location]=event.pressed
 	if event is InputEventMouseMotion||event is InputEventMouseButton:aim=get_global_mouse_position()
 	if event is InputEventKey&&event.pressed&&!event.echo:
 		if ragdoll_active:recover();return
@@ -73,7 +79,7 @@ func _input(event:InputEvent)->void:
 
 func _notification(what:int)->void:
 	if what==NOTIFICATION_APPLICATION_FOCUS_OUT:
-		held_buttons.clear()
+		held_buttons.clear();held_shift_locations.clear()
 		for action in ["move_left","move_right","run","jump","crouch"]:Input.action_release(action)
 
 func jump()->void:
@@ -83,7 +89,10 @@ func jump()->void:
 func _physics_process(dt:float)->void:
 	clock+=dt;recovery_grace=maxf(0,recovery_grace-dt);punch_cooldown=maxf(0,punch_cooldown-dt)
 	if punch_time>=0:punch_time+=dt;if punch_time>0.30:punch_time=-1
-	creatures.step(dt,Rect2(feet()-Vector2(14,145),Vector2(28,145)),actor.velocity)
+	creatures.step(dt,Rect2() if ragdoll_active else Rect2(feet()-Vector2(14,145),Vector2(28,145)),actor.velocity)
+	if !ragdoll_active:
+		var response=creatures.player_contact_response()
+		actor.move_and_collide(response.displacement);actor.velocity+=response.velocity_change
 	if ragdoll_active:update_ragdoll(dt)
 	else:
 		var direction=float(action_down("move_right"))-float(action_down("move_left"))
@@ -175,6 +184,10 @@ func update_ragdoll(dt:float)->void:
 			var n=loose_nodes[id];var before:Vector2=n.p
 			world.collide(n,17 if id=="head" else 3)
 			if n.p!=before:n.previous=n.p-n.v*dt*0.73
+	var contact_points=[]
+	for id in loose_nodes:
+		var point=loose_nodes[id];point.r=17 if id=="head" else 3;contact_points.append(point)
+	creatures.collide_loose_nodes(contact_points)
 	var center=(loose_nodes.chest.p+loose_nodes.hips.p)*0.5+Vector2(0,68)
 	actor.velocity=(center-feet())/dt;actor.position=center-Vector2(0,72.5);grounded=false
 	robot.loose_pose={}

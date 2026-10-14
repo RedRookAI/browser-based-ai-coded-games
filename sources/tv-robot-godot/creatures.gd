@@ -12,6 +12,7 @@ var next_id=1
 var colony={}
 var message=""
 var player={}
+var contact_response={"displacement":Vector2.ZERO,"velocity_change":Vector2.ZERO}
 
 func configure(_room_rect:Rect2,platform_rects:Array[Rect2])->void:
 	world.platforms.assign(platform_rects)
@@ -64,7 +65,8 @@ func nearest_food(p:Vector2)->Dictionary:
 	return nearest
 
 func step(dt:float,player_rect:Rect2,player_velocity:Vector2)->void:
-	player={"p":player_rect.position+Vector2(14,145),"v":player_velocity};clock+=dt
+	player={} if player_rect.size==Vector2.ZERO else {"p":player_rect.position+Vector2(14,145),"v":player_velocity}
+	contact_response={"displacement":Vector2.ZERO,"velocity_change":Vector2.ZERO};clock+=dt
 	update_sushi(dt)
 	for b in bodies:
 		if b.kind=="cake"&&b.chunks<=0:continue
@@ -101,9 +103,30 @@ func collide_player(b:Dictionary)->void:
 	var penetration=b.r-d if d>0.001 else b.r+14-absf(b.p.x-feet.x)
 	var share=10.0/(10+float(b.get("mass",0.4)))
 	b.p+=n*penetration*share
+	var response=-n*penetration*(1-share)
+	player.p+=response;contact_response.displacement+=response
 	var relative=(b.v-player.get("v",Vector2.ZERO)).dot(n)
-	if relative<0:b.v-=n*relative*share;pass
+	if relative<0:
+		b.v-=n*relative*share
+		var velocity_change=n*relative*(1-share)
+		player.v+=velocity_change;contact_response.velocity_change+=velocity_change
 	world.collide(b,b.r)
+
+func player_contact_response()->Dictionary:
+	return contact_response.duplicate(true)
+
+func collide_loose_nodes(points:Array)->void:
+	# Main owns the articulated body; this response modifies only its supplied node copies.
+	for point in points:
+		for b in bodies+grains:
+			if b.get("chunks",1)<=0:continue
+			var delta:Vector2=b.p-point.p;var distance=delta.length();var radius=float(point.get("r",4))
+			if distance>=b.r+radius:continue
+			var n=delta/distance if distance>0.001 else Vector2.RIGHT
+			var depth=b.r+radius-distance
+			b.p+=n*depth*0.8;point.p-=n*depth*0.2
+			b.v+=point.get("v",Vector2.ZERO)*0.08
+			world.collide(b,b.r)
 
 func collide_pair(a:Dictionary,b:Dictionary)->void:
 	if a.get("chunks",1)<=0||b.get("chunks",1)<=0:return
