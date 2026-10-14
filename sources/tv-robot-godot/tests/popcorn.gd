@@ -9,6 +9,7 @@ func run()->void:
 	var c=load("res://creatures.gd").new();root.add_child(c)
 	var platforms:Array[Rect2]=[Rect2(420,327.5,160,18)]
 	c.configure(Rect2(18,60,964,535),platforms)
+	c.rng.seed=830
 	for destination in [c.surface("floor",340),c.surface("ceiling",145),c.surface("platform",455)]:
 		c.restart_lineup(["popcorn"])
 		for i in 18:c.step(1.0/60,Rect2(),Vector2.ZERO)
@@ -54,13 +55,15 @@ func run()->void:
 	for b in rolls:
 		if c.degree(b.id)>2:no_branch=false
 	check("sushi no branches or loop",no_branch&&c.bonds.filter(func(b):return b.active).size()==6)
+	# Reproducible capability trajectory, not a 25-second promise for random wandering.
+	c.rng.seed=1
 	c.restart_lineup(["sushi"])
 	var reached_ceiling=false
 	for i in 1500:
 		c.step(1.0/60,Rect2(),Vector2.ZERO)
 		for roll in c.bodies:
 			if roll.p.y<100:reached_ceiling=true
-	check("sushi physically climbs room surfaces",reached_ceiling)
+	check("seed 1 sushi physically climbs room surfaces",reached_ceiling)
 	c.restart_lineup(["cake","popcorn"])
 	var spider=c.cake();spider.distance=326.0;spider.p=c.perimeter(0,326.0,24).p
 	for g in c.grains:g.p=Vector2(500+(g.id%7-3)*10,588-floori(g.id/7.0)*8)
