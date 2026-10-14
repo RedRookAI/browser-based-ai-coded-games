@@ -22,3 +22,9 @@ godot --headless --path . --export-release Web /absolute/export/index.html
 ```
 
 Keep all exported files together. Export, import caches and test output are not source deliverables. Source files and `.uid` references are intended to be shared through Git.
+
+## Builder milestone results
+
+34 engine acceptance assertions and 22 directed colony/ecology assertions passed on the latest gameplay source. These include actual floor/ceiling/platform ant arrivals, disconnected-member capacity, mid-stretch loss, loose regrouping, sushi room climbing/reunion and a bounded cake jump. Nine real-input/loading/resize assertions passed on the latest Web export using Chromium with software WebGL. Desktop and narrow screenshots were inspected; target-device performance and human acceptance are not established. Independent overseer audit remains required before ticket confirmation.
+
+A clean Web export is shared on the implementation branch under `games/tv-robot-godot/`. The existing published HTML game and collection are unchanged.
