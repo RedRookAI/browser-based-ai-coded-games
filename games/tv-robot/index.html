@@ -1,0 +1,1367 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TV Robot — 2D Portal</title><style>*{box-sizing:border-box}body{margin:0;overflow:hidden;background:#192129;font-family:system-ui;color:#b7c6cc}canvas{display:block;width:100vw;height:100vh;outline:none}.hint{position:absolute;left:20px;bottom:18px;font-size:12px;line-height:1.8;pointer-events:none;background:#182128bb;padding:10px 14px;border-radius:6px}kbd{color:#e0e9ec}.controls{position:absolute;right:18px;bottom:18px;display:flex;gap:8px;align-items:center}.controls button{background:#30464e;border:1px solid #728b8d;border-radius:7px;color:#edf6ef;padding:12px 17px;font:14px system-ui;touch-action:none;user-select:none;cursor:pointer}.controls button:active{background:#527669}#inputStatus{position:absolute;left:20px;top:44px;color:#bcceca;font-size:12px;pointer-events:none}#error{position:absolute;left:20px;top:65px;max-width:85%;color:#ffd5be;white-space:pre-wrap;font:13px monospace;background:#442b28;padding:12px;display:none}@media(max-width:650px){.hint{bottom:80px}.controls{left:20px;right:auto}}</style></head><body>
+<canvas id="c" tabindex="0" aria-label="TV robot movement test"></canvas><div class="hint"><kbd>A / D</kbd> Walk · <kbd>Space</kbd> Jump · <kbd>S</kbd> Crouch · <kbd>Shift</kbd> Run<br>Left-click: punch · Right-click: fire / release grapple · R: release grapple<br>Aim at walls, ceiling, or floor. Aim at the ceiling, walls, or floor. Release the hook to carry your momentum. Restart resets the room.</div>
+<div id="inputStatus">Click the game or a movement button to activate controls.</div>
+<div id="error"></div>
+<div class="controls"><button type="button" data-control="KeyA" aria-label="Walk left">◀ Left</button><button type="button" data-control="KeyD" aria-label="Walk right">Right ▶</button><button type="button" data-control="Space">Jump</button><button type="button" id="restart">Restart</button></div>
+<script>
+window.addEventListener('error',event=>{const panel=document.getElementById('error');panel.style.display='block';panel.textContent='Game error: '+event.message;});
+const c=document.getElementById('c'),g=c.getContext('2d'),keys={};
+// Use a local rounded-rectangle path instead of depending on browser roundRect support.
+function roundedRect(px,py,w,h,r){
+r=Math.max(0,Math.min(r,w/2,h/2));
+g.moveTo(px+r,py);g.lineTo(px+w-r,py);g.quadraticCurveTo(px+w,py,px+w,py+r);
+g.lineTo(px+w,py+h-r);g.quadraticCurveTo(px+w,py+h,px+w-r,py+h);
+g.lineTo(px+r,py+h);g.quadraticCurveTo(px,py+h,px,py+h-r);
+g.lineTo(px,py+r);g.quadraticCurveTo(px,py,px+r,py);g.closePath();
+}
+function keyCode(e){if(e.code==='ShiftLeft'||e.code==='ShiftRight')return e.code;const k=String(e.key||'').toLowerCase();return ({a:'KeyA',d:'KeyD',s:'KeyS',w:'KeyW',' ':'Space',spacebar:'Space',arrowleft:'ArrowLeft',arrowright:'ArrowRight',arrowdown:'ArrowDown',shift:'ShiftLeft'}[k])||e.code||''}
+function press(code){if(robotErased&&duplicates.every(c=>c.erased))return;if(ragdoll.active){recoverRagdoll();return}const wasDown=keys[code];keys[code]=true;if(code==='Space'&&!wasDown&&onGround){vy=-410*gravityDirection;onGround=false}document.getElementById('inputStatus').textContent='Controls active · '+(code==='Space'?'Jump':code==='KeyA'||code==='ArrowLeft'?'Left':code==='KeyD'||code==='ArrowRight'?'Right':'Keyboard');}
+
+
+let W=1000,H=650,ground=540,x=380,y=ground,vx=0,vy=0,facing=1,phase=0,last=0,onGround=true;
+let mouse={x:650,y:360,active:false},headAngle=0,pupilX=0,pupilY=0,clock=0,robotRotation=0;
+const nodes={},links=[];
+let cakeHuntsPopcorn=true;
+let randomCreatureSpawns=true,spawnPopcornAnts=true;
+let activeCreatureLineup=[];
+function rollCreatureLineup(){
+if(!randomCreatureSpawns)return;
+const options=[["pancake","popcorn"],["cake","popcorn"],["sushi","popcorn"],["cake","pancake"],["sushi","cake"],["sushi","pancake"],["cake","popcorn","sushi"],["cake","popcorn","pancake"]];
+activeCreatureLineup=[...options[Math.floor(Math.random()*options.length)]];
+spawnCakeSpider=activeCreatureLineup.includes("cake");spawnPopcornAnts=activeCreatureLineup.includes("popcorn");spawnPancakeRay=activeCreatureLineup.includes("pancake");spawnSushiCaterpillar=activeCreatureLineup.includes("sushi");spawnGummyFrog=false;
+}
+const foodCrumbs=[];
+const popcorn={grains:[],mode:'pile',level:'floor',centerX:140,targetX:230,timer:4,progress:0,travel:0,bridge:null,panic:false};
+function resetPopcorn(){
+popcorn.mode='pile';popcorn.releaseTimer=0;popcorn.level='floor';popcorn.centerX=Math.min(140,W*.2);popcorn.targetX=popcorn.centerX+90;popcorn.timer=4;popcorn.progress=0;popcorn.travel=0;popcorn.bridge=null;popcorn.panic=false;
+popcorn.grains=Array.from({length:spawnPopcornAnts?25:0},(_,id)=>({id,x:popcorn.centerX+(id%7-3)*11,y:ground-7-Math.floor(id/7)*10,vx:0,vy:0,r:5.3+(id%4)*.45,lobes:3+id%3,shape:id*.79,tint:id%5,eye:id%4,rotation:0,seed:(id*37%101)/101,path:[],pathTimer:0,regrouping:false}));
+}
+function popcornPoint(t){
+const route=popcorn.bridge,u=Math.max(0,Math.min(1,t));
+// A curved chain of separate creatures spans the gap; there is no player collider.
+return {x:route.ax+(route.bx-route.ax)*u+Math.sin(u*Math.PI)*route.bend,y:route.ay+(route.by-route.ay)*u};
+}
+function startPopcornBridge(){
+const p=middlePlatform(),right=cakeAlive()?spider.x<W/2:popcorn.centerX>W/2;
+const floorX=right?p.x+p.w+48:p.x-48,platformX=right?p.x+p.w-25:p.x+25;
+const fromFloor=popcorn.level==='floor';
+popcorn.bridge={ax:fromFloor?floorX:platformX,ay:fromFloor?ground-7:p.y-7,bx:fromFloor?platformX:floorX,by:fromFloor?p.y-7:ground-7,bend:right?20:-20,destination:fromFloor?'platform':'floor'};
+popcorn.mode='bridge';popcorn.progress=0;popcorn.travel=0;popcorn.timer=0;
+}
+function popcornGround(g,oldY){
+if(g.y>ground-g.r){g.y=ground-g.r;g.vy=Math.min(0,g.vy)*-.1;g.vx*=.94}
+for(const p of roomPlatforms()){if(g.x>p.x-g.r&&g.x<p.x+p.w+g.r&&oldY+g.r<=p.y+1&&g.y+g.r>=p.y&&g.vy>0){g.y=p.y-g.r;g.vy=0}
+if(g.x>p.x&&g.x<p.x+p.w&&g.y>p.y&&g.y<p.y+p.h){g.y=oldY<p.y?p.y-g.r:p.y+p.h+g.r;g.vy=0}
+}
+g.x=Math.max(26+g.r,Math.min(W-26-g.r,g.x));g.y=Math.max(67+g.r,g.y);
+}
+function popcornComponents(){
+const grains=popcorn.grains,seen=new Set(),groups=[];
+for(const grain of grains){if(seen.has(grain.id))continue;const group=[],queue=[grain];seen.add(grain.id);
+while(queue.length){const current=queue.pop();group.push(current);for(const other of grains){const threshold=(current.r+other.r)*10;if(!seen.has(other.id)&&Math.hypot(current.x-other.x,current.y-other.y)<=threshold){seen.add(other.id);queue.push(other)}}}
+groups.push(group);
+}
+return groups.sort((a,b)=>b.length-a.length);
+}
+function popcornClearOne(a,b,radius,p){
+const box={left:p.x-radius-2,right:p.x+p.w+radius+2,top:p.y-radius-2,bottom:p.y+p.h+radius+2};
+const dx=b.x-a.x,dy=b.y-a.y;let enter=0,exit=1;
+for(const [origin,direction,min,max] of [[a.x,dx,box.left,box.right],[a.y,dy,box.top,box.bottom]]){
+if(Math.abs(direction)<1e-8){if(origin<=min||origin>=max)return true;continue}
+let t1=(min-origin)/direction,t2=(max-origin)/direction;if(t1>t2)[t1,t2]=[t2,t1];enter=Math.max(enter,t1);exit=Math.min(exit,t2);if(enter>=exit)return true;
+}
+return !(exit>0&&enter<1);
+}
+function popcornClearLine(a,b,radius){return roomPlatforms().every(p=>popcornClearOne(a,b,radius,p))}
+function popcornRoute(start,goal,radius){
+if(popcornClearLine(start,goal,radius))return [{x:goal.x,y:goal.y}];
+const pad=radius+5,points=[{x:start.x,y:start.y},{x:goal.x,y:goal.y}];for(const p of roomPlatforms())points.push({x:p.x-pad,y:p.y-pad},{x:p.x+p.w+pad,y:p.y-pad},{x:p.x-pad,y:p.y+p.h+pad},{x:p.x+p.w+pad,y:p.y+p.h+pad});const count=points.length,distance=Array(count).fill(Infinity),parent=Array(count).fill(-1),done=new Set();distance[0]=0;
+for(let iteration=0;iteration<count;iteration++){let best=-1;for(let i=0;i<count;i++)if(!done.has(i)&&(best<0||distance[i]<distance[best]))best=i;if(best<0||!Number.isFinite(distance[best]))break;if(best===1)break;done.add(best);
+for(let j=0;j<count;j++){if(j===best||!popcornClearLine(points[best],points[j],radius))continue;const next=distance[best]+Math.hypot(points[j].x-points[best].x,points[j].y-points[best].y);if(next<distance[j]){distance[j]=next;parent[j]=best}}
+}
+if(!Number.isFinite(distance[1]))return [];
+const route=[];for(let i=1;i!==0&&i>=0;i=parent[i])route.unshift({...points[i]});return route;
+}
+function popcornRegroupTarget(grain,mainGroup,dt){
+grain.pathTimer=Math.max(0,grain.pathTimer-dt);
+const others=popcorn.grains.filter(g=>g!==grain),nearest=Math.min(...others.map(g=>Math.hypot(g.x-grain.x,g.y-grain.y)));
+const separated=nearest>grain.r*20||!mainGroup.includes(grain);
+if(!separated){grain.regrouping=false;grain.path=[];return null}
+const goal=mainGroup.filter(g=>g!==grain).sort((a,b)=>Math.hypot(a.x-grain.x,a.y-grain.y)-Math.hypot(b.x-grain.x,b.y-grain.y))[0];if(!goal)return null;
+grain.regrouping=true;
+if(grain.pathTimer<=0||!grain.path.length){grain.path=popcornRoute(grain,goal,grain.r);grain.pathTimer=.22}
+while(grain.path.length>1&&Math.hypot(grain.x-grain.path[0].x,grain.y-grain.path[0].y)<12)grain.path.shift();
+return grain.path[0]||null;
+}
+function collidePopcornRobot(){
+if(robotErased)return;
+for(let pass=0;pass<2;pass++)for(const grain of popcorn.grains){
+const left=x-14,right=x+14,top=y-145,bottom=y;
+const closestX=Math.max(left,Math.min(right,grain.x)),closestY=Math.max(top,Math.min(bottom,grain.y));let dx=grain.x-closestX,dy=grain.y-closestY,d=Math.hypot(dx,dy),nx,ny,penetration;
+if(d>=grain.r)continue;
+if(d>.001){nx=dx/d;ny=dy/d;penetration=grain.r-d}else{
+const sides=[{d:grain.x-left,nx:-1,ny:0},{d:right-grain.x,nx:1,ny:0},{d:grain.y-top,nx:0,ny:-1},{d:bottom-grain.y,nx:0,ny:1}].sort((a,b)=>a.d-b.d);nx=sides[0].nx;ny=sides[0].ny;penetration=grain.r+sides[0].d;
+}
+// Grounded grains move sideways instead of being forced through the floor.
+if(ny>0&&grain.y+grain.r>=ground-1){nx=grain.x>=x?1:-1;ny=0;penetration=Math.max(1,14+grain.r-Math.abs(grain.x-x))}
+grain.x+=nx*penetration*.96;grain.y+=ny*penetration*.96;x-=nx*penetration*.04;y-=ny*penetration*.04;
+const relative=(grain.vx-vx)*nx+(grain.vy-vy)*ny;if(relative<0){const impulse=-relative*1.05;grain.vx+=nx*impulse*.96;grain.vy+=ny*impulse*.96;vx-=nx*impulse*.04;vy-=ny*impulse*.04}
+popcornGround(grain,grain.y);
+}
+}
+function collidePopcornRagdoll(){
+for(const n of Object.values(nodes))for(const grain of popcorn.grains){const dx=grain.x-n.x,dy=grain.y-n.y,d=Math.hypot(dx,dy)||1,limit=grain.r+4;if(d>=limit)continue;const nx=dx/d,ny=dy/d,depth=limit-d;grain.x+=nx*depth*.8;grain.y+=ny*depth*.8;n.x-=nx*depth*.2;n.y-=ny*depth*.2;grain.vx+=(n.x-n.px)*5;grain.vy+=(n.y-n.py)*5}
+}
+function updatePopcorn(dt){
+if(!popcorn.grains.length)return;
+popcorn.releaseTimer=Math.max(0,(popcorn.releaseTimer||0)-dt);
+const p=middlePlatform(),levelY=popcorn.level==='floor'?ground-14:p.y-14;
+const threat=cakeAlive()?Math.hypot(popcorn.centerX-spider.x,levelY-spider.y):Infinity;
+popcorn.panic=threat<230;if(popcorn.mode==='pile')popcorn.timer-=dt;
+if(popcorn.mode==='pile'){
+const min=popcorn.level==='floor'?65:p.x+25,max=popcorn.level==='floor'?W-65:p.x+p.w-25;
+if(popcorn.panic){const away=popcorn.centerX>=spider.x?1:-1;popcorn.targetX=Math.max(min,Math.min(max,popcorn.centerX+away*180));
+if(Math.abs(popcorn.targetX-popcorn.centerX)<12&&popcorn.timer<1)startPopcornBridge();
+}else if(popcorn.timer<=0){startPopcornBridge()}
+const speed=popcorn.panic?140:58,delta=popcorn.targetX-popcorn.centerX;popcorn.centerX+=Math.sign(delta)*Math.min(Math.abs(delta),speed*dt);
+}else if(popcorn.mode==='bridge'){
+popcorn.progress=Math.min(1,popcorn.progress+dt*.65);
+if(popcorn.progress>=1){popcorn.timer+=dt;if(popcorn.timer>1.3)popcorn.travel+=dt*.42;}
+if(popcorn.travel>=1){popcorn.level=popcorn.bridge.destination;popcorn.centerX=popcorn.bridge.bx;popcorn.targetX=popcorn.level==='platform'?p.x+p.w/2:Math.max(65,Math.min(W-65,popcorn.centerX+(popcorn.centerX<W/2?-120:120)));popcorn.mode='pile';popcorn.timer=5+Math.random()*3;popcorn.bridge=null;}
+}
+const groups=popcornComponents(),mainGroup=groups[0]||[];
+for(const [grainIndex,grain] of popcorn.grains.entries()){
+let target;
+if(popcorn.mode==='bridge'){
+const t=grainIndex/Math.max(1,popcorn.grains.length-1)*popcorn.progress+popcorn.travel;
+target=popcornPoint(t);if(t>1){target.x+=(grain.id%5-2)*9;target.y-=Math.floor(grain.id/5)*7;}
+}else{target={x:popcorn.centerX+(grain.id%7-3)*10.5,y:levelY-Math.floor(grain.id/7)*8.5};}
+const beingTowed=popcorn.mode==='towed'||popcorn.releaseTimer>0;
+const regroup=beingTowed?null:popcornRegroupTarget(grain,mainGroup,dt);if(regroup)target=regroup;if(beingTowed)target={x:grain.x,y:grain.y};
+const oldY=grain.y,dx=target.x-grain.x,dy=target.y-grain.y;
+grain.vx+=dx*(popcorn.mode==='bridge'?45:30)*dt;grain.vy+=dy*(popcorn.mode==='bridge'?70:40)*dt+360*dt;
+grain.vx*=Math.exp(-(beingTowed?.55:8)*dt);grain.vy*=Math.exp(-(beingTowed?.55:9)*dt);
+if(popcorn.mode==='pile'&&cakeAlive()){const ax=grain.x-spider.x,ay=grain.y-spider.y,d=Math.hypot(ax,ay)||1;if(d<100){grain.vx+=ax/d*(100-d)*5*dt;grain.vy+=ay/d*(100-d)*2*dt}}
+grain.x+=grain.vx*dt;grain.y+=grain.vy*dt;popcornGround(grain,oldY);grain.rotation=Math.sin(clock*5+grain.shape)*.12+grain.vx*.0015;
+}
+// Grains repel overlap but softly cling to nearby neighbors, like a living pile.
+for(let iteration=0;iteration<3;iteration++){
+for(let i=0;i<popcorn.grains.length;i++)for(let j=i+1;j<popcorn.grains.length;j++){
+const a=popcorn.grains[i],b=popcorn.grains[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.01,min=(a.r+b.r)*.85;
+if(d<min){const f=(min-d)/d*.28;a.x-=dx*f;a.y-=dy*f;b.x+=dx*f;b.y+=dy*f}
+else if(popcorn.mode==='pile'&&d<20){const f=.004;a.x+=dx*f;b.x-=dx*f;a.y+=dy*f;b.y-=dy*f}
+}
+if(popcorn.mode==='bridge')for(let i=0;i<popcorn.grains.length-1;i++){
+const a=popcorn.grains[i],b=popcorn.grains[i+1],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,pa=popcornPoint(i/Math.max(1,popcorn.grains.length-1)),pb=popcornPoint((i+1)/Math.max(1,popcorn.grains.length-1)),limit=Math.max(13,Math.hypot(pb.x-pa.x,pb.y-pa.y)*1.12);
+if(d>limit){const f=(d-limit)/d*.32;a.x+=dx*f;a.y+=dy*f;b.x-=dx*f;b.y-=dy*f}
+}
+}
+}
+function drawPopcorn(){
+const creams=['#fff3cf','#eee4bd','#fff5de','#e9d9a8','#f3ecca'];
+for(const grain of popcorn.grains){
+g.save();g.translate(grain.x,grain.y);g.rotate(grain.rotation);
+const walk=Math.sin(clock*(popcorn.panic?22:13)+grain.shape)*1.5;
+for(const side of [-1,1]){line({x:side*3,y:3},{x:side*(6+walk),y:7},1,'#927545');line({x:side*2,y:1},{x:side*(7-walk),y:4},1,'#927545')}
+g.fillStyle='#a4824d';g.beginPath();g.arc(0,1,grain.r*.7,0,Math.PI*2);g.fill();
+for(let l=0;l<grain.lobes;l++){const angle=grain.shape+l*Math.PI*2/grain.lobes,rr=grain.r*(.54+(l%2)*.08);g.fillStyle=creams[(grain.tint+l)%creams.length];g.beginPath();g.arc(Math.cos(angle)*grain.r*.48,Math.sin(angle)*grain.r*.45,rr,0,Math.PI*2);g.fill()}
+g.fillStyle='#c09245';g.beginPath();g.arc(-1,1,1.4+grain.seed,0,Math.PI*2);g.fill();
+g.fillStyle='#433a25';g.fillRect(1,-1,1,1.5);if(grain.eye%2===0)g.fillRect(-2,-1,1,1.5);if(grain.eye===3){g.strokeStyle='#685232';g.lineWidth=.8;g.beginPath();g.moveTo(0,-3);g.lineTo(3,-2);g.stroke()}
+g.restore();
+}
+}
+
+// Shared foundation for the upcoming sushi, pancake, and gummy creatures.
+// No new creature is spawned here. AI supplies acceleration; physics owns velocity.
+const creatureBodies=[];
+const creatureLinks=[];
+let nextCreatureId=1;
+// Keep the gummy frog implementation, but do not spawn it.
+let spawnGummyFrog=false;
+function spawnFrog(){
+if(!spawnGummyFrog)return;
+addCreatureBody({kind:'frog',x:Math.min(W-100,W*.4),y:ground-19,radius:18,mass:1.25,gravity:850,drag:.13,restitution:.08,friction:.04,facing:1,legPhase:0,crouchTime:0,landingSquish:0,jumpTimer:.65,tongueTimer:1.3,tongueChoice:0,think:frogThink,tongue:{state:'idle',x:0,y:0,ax:0,ay:0,sx:0,sy:0,travel:0,total:0,length:0,hold:0,targetId:null}});
+}
+function frogMouth(body){return {x:body.x+body.facing*14,y:body.y-3}}
+function frogSupported(body){return body.contacts.has('floor')||body.contacts.has('platform')&&body.vy>=-1&&body.vy<=1;}
+function frogThink(body,dt){
+body.legPhase+=dt*(3+Math.abs(body.vx)*.13);body.landingSquish=Math.max(0,body.landingSquish-dt*3);body.jumpTimer-=dt;body.tongueTimer-=dt;
+const supported=frogSupported(body);
+if(body.x<85)body.facing=1;if(body.x>W-85)body.facing=-1;
+if(supported&&body.tongue.state==='idle'){
+if(body.jumpTimer<=0&&body.crouchTime<=0){body.crouchTime=.2;body.jumpTimer=1.8+Math.random()*.8;}
+if(body.crouchTime>0){body.crouchTime=Math.max(0,body.crouchTime-dt);body.ax-=body.vx*5;if(body.crouchTime===0){body.vy=-335;body.vx+=body.facing*85;}}
+else body.ax+=(body.facing*45-body.vx)*3;
+}else if(body.tongue.state!=='attached')body.ax+=body.facing*35;
+if(body.tongueTimer<=0&&body.tongue.state==='idle')fireFrogTongue(body);
+body.angle+=(Math.max(-.25,Math.min(.25,body.vy*.0006))-body.angle)*(1-Math.exp(-4*dt));
+}
+function fireFrogTongue(body){
+const p=middlePlatform(),mouth=frogMouth(body),choice=body.tongueChoice++%3;
+let goal=choice===0?{x:Math.max(p.x+12,Math.min(p.x+p.w-12,body.x+body.facing*120)),y:body.y>p.y?p.y+p.h:p.y}:choice===1?{x:Math.max(70,Math.min(W-70,body.x+body.facing*180)),y:60}:{x:body.facing>0?W-18:18,y:Math.max(110,body.y-100)};
+const dx=goal.x-mouth.x,dy=goal.y-mouth.y,length=Math.hypot(dx,dy)||1,direction={x:dx/length,y:dy/length},hits=[];
+if(direction.x<-.0001)hits.push((18-mouth.x)/direction.x);if(direction.x>.0001)hits.push((W-18-mouth.x)/direction.x);if(direction.y<-.0001)hits.push((60-mouth.y)/direction.y);if(direction.y>.0001)hits.push((ground-mouth.y)/direction.y);
+const platform=rayPlatform(mouth,direction);if(platform!==null)hits.push(platform);
+const distance=Math.min(...hits.filter(d=>d>1));if(!Number.isFinite(distance)||distance>1000){body.tongueTimer=1;return}
+Object.assign(body.tongue,{state:'flying',x:mouth.x,y:mouth.y,sx:mouth.x,sy:mouth.y,ax:mouth.x+direction.x*distance,ay:mouth.y+direction.y*distance,travel:0,total:distance,targetId:null,hold:0});
+}
+function retractFrogTongue(body){body.tongue.state='retracting';body.tongue.targetId=null;body.tongueTimer=1.6+Math.random()*.7;}
+function updateFrogTongue(body,dt){
+const tongue=body.tongue,mouth=frogMouth(body);
+if(body.hooked&&tongue.state!=='idle'&&tongue.state!=='retracting')retractFrogTongue(body);
+if(tongue.state==='idle')return;
+if(tongue.state==='retracting'){const dx=mouth.x-tongue.x,dy=mouth.y-tongue.y,d=Math.hypot(dx,dy)||1,step=Math.min(d,900*dt);tongue.x+=dx/d*step;tongue.y+=dy/d*step;if(d<step+2)tongue.state='idle';return;}
+if(tongue.state==='flying'){
+const oldX=tongue.x,oldY=tongue.y;tongue.travel=Math.min(tongue.total,tongue.travel+1100*dt);const t=tongue.travel/tongue.total;tongue.x=tongue.sx+(tongue.ax-tongue.sx)*t;tongue.y=tongue.sy+(tongue.ay-tongue.sy)*t;
+const hit=segmentCreatureHit(oldX,oldY,tongue.x,tongue.y,body.id);
+if(hit||t>=1){if(hit){const target=creatureBodies.find(b=>b.id===hit.bodyId);tongue.targetId=target.id;tongue.offsetX=hit.x-target.x;tongue.offsetY=hit.y-target.y;tongue.ax=hit.x;tongue.ay=hit.y;}
+tongue.state='attached';tongue.x=tongue.ax;tongue.y=tongue.ay;tongue.length=Math.max(45,Math.hypot(tongue.ax-body.x,tongue.ay-body.y));tongue.hold=0;}
+}
+if(tongue.state!=='attached')return;
+const target=tongue.targetId?creatureBodies.find(b=>b.id===tongue.targetId&&b.active):null;if(tongue.targetId&&!target){retractFrogTongue(body);return}
+if(target){tongue.ax=target.x+tongue.offsetX;tongue.ay=target.y+tongue.offsetY;}
+const oldLength=tongue.length;tongue.length=Math.max(45,tongue.length-130*dt);const reel=(oldLength-tongue.length)/dt,dx=body.x-tongue.ax,dy=body.y-tongue.ay,d=Math.hypot(dx,dy)||1;
+if(d>tongue.length){const nx=dx/d,ny=dy/d,depth=d-tongue.length,share=target?target.mass/(target.mass+body.mass):1,previous={x:body.x,y:body.y};body.x-=nx*depth*share;body.y-=ny*depth*share;
+const radial=(body.vx-(target?.vx||0))*nx+(body.vy-(target?.vy||0))*ny;if(radial>-reel){body.vx-=nx*(radial+reel)*share;body.vy-=ny*(radial+reel)*share;}
+resolveCreatureWorld(body,previous);
+if(target){const previousTarget={x:target.x,y:target.y};target.x+=nx*depth*(1-share);target.y+=ny*depth*(1-share);if(radial>-reel){target.vx+=nx*(radial+reel)*(1-share);target.vy+=ny*(radial+reel)*(1-share)}resolveCreatureWorld(target,previousTarget);}
+}
+tongue.x=tongue.ax;tongue.y=tongue.ay;tongue.hold+=dt;if(tongue.hold>1.5||d<52)retractFrogTongue(body);
+}
+function drawFrog(){
+for(const body of creatureBodies){if(body.kind!=='frog'||!body.active)continue;
+const mouth=frogMouth(body),tongue=body.tongue;
+if(tongue.state!=='idle'){const tension=tongue.state==='attached',wave=tension?1:Math.sin(clock*13)*9;g.strokeStyle='#813f62';g.lineWidth=5;g.lineCap='round';g.beginPath();g.moveTo(mouth.x,mouth.y);g.bezierCurveTo(mouth.x+(tongue.x-mouth.x)*.3,mouth.y+(tongue.y-mouth.y)*.3+wave,mouth.x+(tongue.x-mouth.x)*.7,mouth.y+(tongue.y-mouth.y)*.7-wave,tongue.x,tongue.y);g.stroke();g.strokeStyle='#f3a6bb';g.lineWidth=2;g.stroke();g.fillStyle='#e990ad';g.beginPath();g.arc(tongue.x,tongue.y,4,0,Math.PI*2);g.fill();}
+g.save();g.translate(body.x,body.y);g.scale(body.facing,1);g.rotate(body.angle);const supported=frogSupported(body),crouch=body.crouchTime>0?1:Math.min(1,body.landingSquish),hop=!supported,walk=Math.sin(body.legPhase)*2;
+// Two articulated hind legs and two front arms, with gummy joint pads.
+for(const back of [true,false]){const offset=back?-4:2,hip={x:-8,y:5+offset},knee={x:hop?-23:-20,y:hop?7:12+offset},foot={x:hop?-30:-13+walk,y:hop?13:18};
+line(hip,knee,7,back?'#487a61':'#78b38a');line(knee,foot,5,back?'#487a61':'#91c898');g.fillStyle=back?'#639478':'#acdcb2';g.beginPath();g.arc(knee.x,knee.y,3.5,0,Math.PI*2);g.fill();for(let t=0;t<3;t++)line(foot,{x:foot.x+4+t*2,y:foot.y+1-t},2,'#9acf9d');}
+for(const back of [true,false]){const shoulder={x:7,y:2},elbow={x:hop?13:14,y:hop?7:11},hand={x:hop?18:20-walk,y:hop?9:17};line(shoulder,elbow,4,back?'#4f886a':'#a3d8a7');line(elbow,hand,3,back?'#4f886a':'#a3d8a7');}
+g.save();g.scale(1+crouch*.17,1-crouch*.22);g.fillStyle='#75b78a';g.beginPath();g.ellipse(-3,1,18,12,0,0,Math.PI*2);g.fill();g.strokeStyle='#447656';g.lineWidth=1.2;g.stroke();g.fillStyle='#a8d6aa';g.beginPath();g.ellipse(1,4,11,6,0,0,Math.PI*2);g.fill();g.fillStyle='#a2d39c';g.beginPath();g.ellipse(10,-3,11,9,0,0,Math.PI*2);g.fill();
+for(const ex of [5,14]){g.fillStyle='#b3dfaa';g.beginPath();g.arc(ex,-10,5,0,Math.PI*2);g.fill();g.fillStyle='#e8efd1';g.beginPath();g.arc(ex+1,-11,3,0,Math.PI*2);g.fill();g.fillStyle='#304b3b';g.beginPath();g.arc(ex+2,-11,1.5,0,Math.PI*2);g.fill();}
+g.strokeStyle='#486347';g.lineWidth=1.4;g.beginPath();g.moveTo(11,2);g.quadraticCurveTo(16,4,20,1);g.stroke();g.strokeStyle='#d2edd0';g.lineWidth=2;g.beginPath();g.moveTo(-12,-5);g.quadraticCurveTo(-4,-11,1,-6);g.stroke();g.fillStyle='#588d68';for(const spot of [{x:-13,y:2},{x:-7,y:-2},{x:-3,y:7}]){g.beginPath();g.arc(spot.x,spot.y,1.5,0,Math.PI*2);g.fill();}g.restore();
+if(body.hooked){g.strokeStyle='#e9f7c1';g.lineWidth=1.5;g.beginPath();g.ellipse(0,0,23,17,0,0,Math.PI*2);g.stroke();}g.restore();
+}
+}
+
+let spawnPancakeRay=true;
+let pancakeHuntsCake=true;
+const rayCrashParticles=[];
+function spawnPancake(){
+if(!spawnPancakeRay)return;
+addCreatureBody({kind:'pancake',x:W*.3,y:150,radius:34,mass:1.8,gravity:0,drag:.3,restitution:.08,friction:.05,health:3,maxHealth:3,dead:false,hurtCooldown:0,hitFlash:0,stunTime:0,huntPause:0,pursuitUntil:0,onImpact:pancakeCrash,facing:1,wingPhase:0,biteCooldown:0,chewTime:0,hunting:false,goal:{x:W*.65,y:170},route:[],routeTimer:0,wanderTimer:4,think:pancakeFlight});
+}
+function pancakeFlight(body,dt){
+if(body.dead||body.stunTime>0)return;
+body.wingPhase+=dt*3.8;body.wanderTimer-=dt;body.routeTimer-=dt;
+body.hunting=pancakeHuntsCake&&cakeAlive()&&body.huntPause<=0;body.pursuitUntil=0;
+if(body.hunting){
+const direction=spider.x>=body.x?1:-1,lead=body.biteCooldown>0?0:.32;
+const retreat=body.biteCooldown>0?75:24;
+body.goal={x:spider.x+spider.vx*lead-direction*retreat,y:spider.y+spider.vy*lead+(body.biteCooldown>0?-35:0)};
+const pad=body.radius+11;
+for(const platform of roomPlatforms()){
+body.goal.x=Math.max(18+pad,Math.min(W-18-pad,body.goal.x));body.goal.y=Math.max(60+pad,Math.min(ground-pad,body.goal.y));
+if(body.goal.x>platform.x-pad&&body.goal.x<platform.x+platform.w+pad&&body.goal.y>platform.y-pad&&body.goal.y<platform.y+platform.h+pad){
+const options=[{d:body.goal.y-platform.y+pad,x:body.goal.x,y:platform.y-pad},{d:platform.y+platform.h+pad-body.goal.y,x:body.goal.x,y:platform.y+platform.h+pad},{d:body.goal.x-platform.x+pad,x:platform.x-pad,y:body.goal.y},{d:platform.x+platform.w+pad-body.goal.x,x:platform.x+platform.w+pad,y:body.goal.y}].sort((a,b)=>a.d-b.d);body.goal={x:options[0].x,y:options[0].y};
+}
+}
+if(Math.hypot(body.vx,body.vy)<18)body.facing=direction;
+}
+
+if(!body.hunting&&(body.wanderTimer<=0||Math.hypot(body.goal.x-body.x,body.goal.y-body.y)<30)){
+const p=middlePlatform();let goal;for(let attempt=0;attempt<20;attempt++){goal={x:85+Math.random()*(W-170),y:115+Math.random()*(ground-190)};if(goal.x<p.x-48||goal.x>p.x+p.w+48||goal.y<p.y-48||goal.y>p.y+p.h+48)break;}
+body.goal=goal;body.wanderTimer=5+Math.random()*4;body.routeTimer=0;
+}
+if(body.routeTimer<=0){body.route=popcornRoute(body,body.goal,body.radius+10);body.routeTimer=.4;}
+while(body.route.length>1&&Math.hypot(body.route[0].x-body.x,body.route[0].y-body.y)<24)body.route.shift();
+const waypoint=body.route[0]||body.goal,dx=waypoint.x-body.x,dy=waypoint.y-body.y,d=Math.hypot(dx,dy)||1,speed=body.chewTime>0?12:body.route.length>1&&d<65?25:52;
+const wantedX=dx/d*speed,wantedY=dy/d*speed,ax=(wantedX-body.vx)*2.4,ay=(wantedY-body.vy)*2.4,length=Math.hypot(ax,ay)||1,limit=Math.min(1,125/length);
+body.ax+=ax*limit;body.ay+=ay*limit;
+if(Math.abs(body.vx)>4)body.facing=body.vx>0?1:-1;
+const angle=Math.atan2(body.vy,Math.max(15,Math.abs(body.vx)));body.angle+=(Math.max(-.45,Math.min(.45,angle))-body.angle)*(1-Math.exp(-3*dt));
+}
+function pancakeCrash(event){
+const body=event.body;if(body.dead||body.health<=0)return;
+const pursuing=body.hunting&&body.huntPause<=0;
+if(pursuing){
+// Abandon the current cake route on contact and wander before trying again.
+body.hunting=false;body.pursuitUntil=0;body.huntPause=5;body.route=[];body.routeTimer=0;body.wanderTimer=0;body.goal={x:body.x,y:body.y};
+}
+if(!pursuing||body.hurtCooldown>0||event.speed<110)return;
+body.health=Math.max(0,body.health-1);body.hurtCooldown=.85;body.hitFlash=.28;body.stunTime=.32;
+body.vx+=event.normal.x*105;body.vy+=event.normal.y*105;body.angularVelocity+=event.normal.x*2.8-event.normal.y*1.7;
+for(let i=0;i<10;i++)rayCrashParticles.push({x:body.x-event.normal.x*body.radius,y:body.y-event.normal.y*body.radius,vx:event.normal.x*45+(Math.random()-.5)*150,vy:event.normal.y*45-30-Math.random()*90,time:.65,color:i<3?'#ffe3a0':'#bd915b'});
+if(body.health===0){body.dead=true;body.hunting=false;body.think=null;body.gravity=850;body.drag=.1;body.friction=.35;body.angularVelocity+=2;body.chewTime=0;document.getElementById('inputStatus').textContent='Pancake ray fell limp · Restart restores it';}
+else document.getElementById('inputStatus').textContent='Pancake crashed · '+body.health+'/3 health';
+}
+function updateRayCrashEffects(dt){
+for(let i=rayCrashParticles.length-1;i>=0;i--){const p=rayCrashParticles[i];p.time-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=400*dt;if(p.time<=0)rayCrashParticles.splice(i,1)}
+}
+function drawRayCrashEffects(){for(const p of rayCrashParticles){g.fillStyle=p.color;g.fillRect(p.x,p.y,3,3)}}
+function pancakeMouth(body){const co=Math.cos(body.angle),si=Math.sin(body.angle);return {x:body.x+body.facing*(co*24-si*3),y:body.y+si*24+co*3};}
+function updatePancakeBites(dt){
+for(const body of creatureBodies){if(body.kind!=='pancake'||!body.active||body.dead)continue;body.biteCooldown=Math.max(0,body.biteCooldown-dt);body.chewTime=Math.max(0,body.chewTime-dt);
+if(!pancakeHuntsCake||!cakeAlive()||body.huntPause>0||body.hooked||body.biteCooldown>0)continue;
+const mouth=pancakeMouth(body);if(Math.hypot(mouth.x-spider.x,mouth.y-spider.y)>22||!popcornClearLine(mouth,spider,0))continue;
+spider.chunks=Math.max(0,spider.chunks-1);body.biteCooldown=5;body.chewTime=.65;
+for(let i=0;i<12;i++)foodCrumbs.push({x:mouth.x,y:mouth.y,vx:(Math.random()-.5)*130,vy:-40-Math.random()*90,time:.65});
+if(spider.chunks===0){spider.eaten=true;spider.vx=spider.vy=0;spider.crawling=false;if(grapple.target==='spider')releaseHook();document.getElementById('inputStatus').textContent='Pancake ray finished the cake';}else document.getElementById('inputStatus').textContent='Pancake bit the cake · '+spider.chunks+' chunks left';
+}
+}
+function drawPancake(){
+for(const body of creatureBodies){if(body.kind!=='pancake'||!body.active)continue;
+g.save();g.translate(body.x,body.y);g.scale(body.facing,1);g.rotate(body.angle);
+const flap=body.dead?0:Math.sin(body.wingPhase),tip=body.dead?22:flap*17;
+if(body.hitFlash>0){g.shadowColor='#fff2d2';g.shadowBlur=18;}
+// A flexible syrup tail trails behind the pancake.
+g.strokeStyle='#81482c';g.lineWidth=4;g.lineCap='round';g.beginPath();g.moveTo(-19,4);g.bezierCurveTo(-35,12+flap*5,-43,-8-flap*7,-60,8+flap*9);g.stroke();g.strokeStyle='#bb783c';g.lineWidth=1;g.stroke();
+for(const back of [true,false]){
+const offset=back?-6:5;g.fillStyle=back?'#b47c41':'#d6a35f';g.strokeStyle='#8e5e32';g.lineWidth=1.5;
+g.beginPath();g.moveTo(-17,offset);g.bezierCurveTo(-30,-8+offset,-45,tip+offset,-40,tip+7+offset);g.quadraticCurveTo(-29,15+offset,-8,8+offset);g.closePath();g.fill();g.stroke();
+}
+g.fillStyle='#a97037';g.beginPath();g.ellipse(0,3,24,10,0,0,Math.PI*2);g.fill();g.fillStyle='#e2b975';g.beginPath();g.ellipse(0,0,24,10,0,0,Math.PI*2);g.fill();g.strokeStyle='#f1d59a';g.lineWidth=1.3;g.beginPath();g.ellipse(0,-1,19,7,0,0,Math.PI*2);g.stroke();
+g.fillStyle='#b88344';for(let i=0;i<5;i++){g.beginPath();g.arc(-12+i*5,Math.sin(i*2)*3,1.2,0,Math.PI*2);g.fill();}
+g.fillStyle='#73482b';g.beginPath();roundedRect(20,2,5,body.chewTime>0?3+Math.abs(Math.sin(body.chewTime*24))*3:1.5,1);g.fill();
+// Butter eyes and three separate butter pieces show its health.
+for(const ex of [12,19]){g.fillStyle='#f1d979';g.beginPath();roundedRect(ex-3,-12,6,7,1.5);g.fill();g.fillStyle='#453623';if(body.dead){line({x:ex-1,y:-11},{x:ex+2,y:-8},1,'#453623');line({x:ex+2,y:-11},{x:ex-1,y:-8},1,'#453623')}else g.fillRect(ex,-10,1.5,2.5);}
+for(let i=0;i<body.maxHealth;i++){g.fillStyle=i<body.health?'#ffe599':'#735338';g.beginPath();roundedRect(-12+i*7,-16,5.5,5,1);g.fill();if(i<body.health){g.fillStyle='#fff2bd';g.fillRect(-11+i*7,-15,3,1)}}
+if(body.hooked){g.strokeStyle='#95d4bb';g.lineWidth=1.3;g.beginPath();g.ellipse(0,0,27,14,0,0,Math.PI*2);g.stroke()}
+g.restore();
+}
+}
+
+let spawnSushiCaterpillar=true;
+let sushiCakeWandering=true;
+const sushi={time:0,groups:[],bonds:[]};
+function spawnSushi(){
+sushi.time=0;sushi.groups=[];sushi.bonds=[];if(!spawnSushiCaterpillar)return;
+const headX=Math.min(W-100,W*.72);
+const rolls=Array.from({length:7},(_,index)=>addCreatureBody({kind:'sushi',index,x:headX-index*29,y:ground-15,radius:14,mass:.75,gravity:850,drag:.18,restitution:.04,friction:.025,walkPhase:index*.8,facing:1,isHead:index===0,targetX:Math.min(W-70,headX+130),decisionTime:3+index*.1,jumpCooldown:0,think:sushiThink}));
+for(let i=0;i<6;i++)makeSushiBond(rolls[i],rolls[i+1]);
+updateSushiAI(0);
+}
+function makeSushiBond(a,b){
+const link=linkCreatureBodies(a,b,{length:29,breakStretch:1.9,kind:'sushi',seenActive:true,reconnectAfter:0});sushi.bonds.push(link);return link;
+}
+function sushiGroups(){
+const rolls=creatureBodies.filter(b=>b.kind==='sushi'&&b.active),seen=new Set(),groups=[];
+for(const roll of rolls){if(seen.has(roll.id))continue;const queue=[roll],group=[];seen.add(roll.id);while(queue.length){const current=queue.pop();group.push(current);for(const bond of sushi.bonds){if(!bond.active)continue;const id=bond.a===current.id?bond.b:bond.b===current.id?bond.a:null;const other=rolls.find(b=>b.id===id);if(other&&!seen.has(id)){seen.add(id);queue.push(other)}}}groups.push(orderSushiChain(group));}
+return groups;
+}
+function sushiNeighbors(roll){return sushi.bonds.filter(b=>b.active&&(b.a===roll.id||b.b===roll.id)).map(b=>b.a===roll.id?b.b:b.a)}
+function orderSushiChain(group){
+const ends=group.filter(roll=>sushiNeighbors(roll).length<=1).sort((a,b)=>a.index-b.index);
+const head=ends.find(roll=>roll.isHead)||ends[0]||group[0],ordered=[],seen=new Set();let current=head;
+while(current&&!seen.has(current.id)){ordered.push(current);seen.add(current.id);current=group.find(roll=>!seen.has(roll.id)&&sushiNeighbors(current).includes(roll.id));}
+return ordered;
+}
+function assignSushiHeads(){
+sushi.groups=sushiGroups();
+for(const group of sushi.groups){const root=group[0];for(let i=0;i<group.length;i++){const roll=group[i];roll.rootId=root.id;roll.isHead=i===0;roll.followId=i?group[i-1].id:null;}}
+}
+function reverseSushiChain(group){
+const old=group[0],next=group[group.length-1],neighbor=group[group.length-2];
+if(!neighbor)return old;
+const dx=next.x-neighbor.x,dy=next.y-neighbor.y;
+next.targetX=dx>=0?W-33:33;next.pathGoal={x:next.targetX,y:next.y};
+next.facing=Math.sign(dx)||-old.facing;next.climbDirection=Math.sign(dy)||-(old.climbDirection||-1);next.travelDirection=Math.sign(dx)||-(old.travelDirection||1);
+next.decisionTime=old.decisionTime;next.wanderPause=old.wanderPause||0;
+group.reverse();for(let i=0;i<group.length;i++){const roll=group[i];roll.isHead=i===0;roll.rootId=next.id;roll.followId=i?group[i-1].id:null;}
+return next;
+}
+function updateSushiAI(dt){
+sushi.time+=dt;const rolls=creatureBodies.filter(b=>b.kind==='sushi'&&b.active);if(!rolls.length){sushi.groups=[];return}
+for(const bond of sushi.bonds){
+if(bond.active){const a=creatureBodies.find(b=>b.id===bond.a),b=creatureBodies.find(b=>b.id===bond.b);const tension=a?.hooked&&!b?.hooked?(a.hookTension||0):b?.hooked&&!a?.hooked?(b.hookTension||0):0;
+bond.strainTime=tension>100?(bond.strainTime||0)+dt:Math.max(0,(bond.strainTime||0)-dt*2);if(bond.strainTime>.45)bond.active=false;
+}
+if(bond.seenActive&&!bond.active){bond.seenActive=false;bond.reconnectAfter=sushi.time+1.3;}}
+
+sushi.groups=sushiGroups();
+for(const group of sushi.groups){let root=group[0];for(let i=0;i<group.length;i++){const roll=group[i];roll.rootId=root.id;roll.isHead=i===0;roll.followId=i?group[i-1].id:null;roll.walkPhase+=dt*(3+Math.abs(roll.vx)*.17);roll.jumpCooldown=Math.max(0,roll.jumpCooldown-dt)}
+let reunion=null,distance=Infinity;
+for(const own of group)for(const other of rolls){if(group.includes(other)||sushiNeighbors(own).length>1||sushiNeighbors(other).length>1)continue;const d=Math.hypot(own.x-other.x,own.y-other.y);if(d<distance){distance=d;reunion=other}}
+root.reunionId=reunion?.id||null;root.decisionTime-=dt;
+root.wanderPause=Math.max(0,(root.wanderPause||0)-dt);
+if(sushiCakeWandering&&!reunion&&root.decisionTime<=0){
+const roll=Math.random();root.decisionTime=2+Math.random()*3;root.wanderPause=roll>.85?.4:0;
+if(roll<.15)root=reverseSushiChain(group);
+const support=sushiSurface(root),neighbor=group[1];
+const direction=neighbor?Math.sign(root.x-neighbor.x)||root.facing:root.facing;
+root.targetX=direction>0?W-33:33;root.pathGoal={x:root.targetX,y:root.y};
+if(support?.nx)root.climbDirection=neighbor?Math.sign(root.y-neighbor.y)||root.climbDirection:root.climbDirection;
+if(support?.ny>0)root.travelDirection=direction;
+}
+if(reunion){const tail=group[group.length-1];if(sushiCakeWandering&&group.length>1&&Math.hypot(tail.x-reunion.x,tail.y-reunion.y)+35<Math.hypot(root.x-reunion.x,root.y-reunion.y))root=reverseSushiChain(group);root.reunionId=reunion.id;root.targetX=reunion.x;root.pathGoal={x:reunion.x,y:reunion.y};}
+else if(!sushiCakeWandering&&(root.decisionTime<=0||Math.abs(root.x-root.targetX)<15)){const p=middlePlatform(),onPlatform=Math.abs(root.y+root.radius-p.y)<4&&root.x>p.x&&root.x<p.x+p.w;const min=onPlatform?p.x+22:33,max=onPlatform?p.x+p.w-22:W-33;root.targetX=Math.random()<.55?(root.facing>0?max:min):min+Math.random()*(max-min);root.pathGoal={x:root.targetX,y:root.y};root.decisionTime=3+Math.random()*4;}
+if(!root.pathGoal)root.pathGoal={x:root.targetX,y:root.y};
+}
+// Free ends can join in either orientation. Never branch or close a loop.
+for(let i=0;i<rolls.length;i++)for(let j=i+1;j<rolls.length;j++){
+const a=rolls[i],b=rolls[j];if(a.hooked||b.hooked||sushiNeighbors(a).length>1||sushiNeighbors(b).length>1)continue;
+if(sushiGroups().some(group=>group.includes(a)&&group.includes(b)))continue;
+const cooling=sushi.bonds.some(link=>!link.active&&(link.a===a.id||link.b===a.id||link.a===b.id||link.b===b.id)&&sushi.time<link.reconnectAfter);
+if(cooling)continue;
+if(Math.hypot(b.x-a.x,b.y-a.y)<35&&Math.hypot(b.vx-a.vx,b.vy-a.vy)<150){makeSushiBond(a,b);assignSushiHeads();}
+}
+
+}
+function sushiSurface(body){
+const r=body.radius,candidates=[{d:Math.abs(body.x-18-r),nx:1,ny:0,kind:'left'},{d:Math.abs(W-18-r-body.x),nx:-1,ny:0,kind:'right'},{d:Math.abs(body.y-60-r),nx:0,ny:1,kind:'ceiling'},{d:Math.abs(ground-r-body.y),nx:0,ny:-1,kind:'floor'}];
+for(const p of roomPlatforms()){
+if(body.x>=p.x-r&&body.x<=p.x+p.w+r){candidates.push({d:Math.abs(body.y-p.y+r),nx:0,ny:-1,kind:'platform-top'},{d:Math.abs(body.y-p.y-p.h-r),nx:0,ny:1,kind:'platform-bottom'})}
+if(body.y>=p.y-r&&body.y<=p.y+p.h+r)candidates.push({d:Math.abs(body.x-p.x+r),nx:-1,ny:0,kind:'platform-side'},{d:Math.abs(body.x-p.x-p.w-r),nx:1,ny:0,kind:'platform-side'});
+}
+if(body.isHead&&body.y>=ground-r-5){
+if(body.x<=18+r+8&&body.targetX<body.x+4)return {d:0,nx:1,ny:0,kind:'left'};
+if(body.x>=W-18-r-8&&body.targetX>body.x-4)return {d:0,nx:-1,ny:0,kind:'right'};
+}
+if(body.isHead&&body.surfaceKind==='left'||body.isHead&&body.surfaceKind==='right'){
+if(body.y<=60+r+5)return {d:0,nx:0,ny:1,kind:'ceiling'};
+if(body.y>=ground-r-5&&body.climbDirection>0)return {d:0,nx:0,ny:-1,kind:'floor'};
+}
+return candidates.sort((a,b)=>a.d-b.d).find(c=>c.d<7)||null;
+}
+function sushiThink(body,dt){
+const support=sushiSurface(body),root=creatureBodies.find(b=>b.id===body.rootId)||body;
+if(support){
+const previous=body.surfaceKind;body.surfaceKind=support.kind;body.gravity=0;body.ax-=support.nx*170;body.ay-=support.ny*170;
+let wantedX=0,wantedY=0;
+if(body.isHead){
+if(support.nx!==0){if(previous!==support.kind)body.climbDirection=previous==='ceiling'?1:-1;wantedY=(body.climbDirection||-1)*54;body.facing=support.nx>0?(wantedY<0?-1:1):(wantedY<0?1:-1);}
+else if(support.ny>0){if(previous==='left')body.travelDirection=1;if(previous==='right')body.travelDirection=-1;wantedX=(body.travelDirection||1)*54;body.facing=-Math.sign(wantedX);}
+else{if(previous==='left'){body.targetX=W-33;body.pathGoal={x:body.targetX,y:body.y}}if(previous==='right'){body.targetX=33;body.pathGoal={x:body.targetX,y:body.y}}const goal=body.pathGoal||{x:body.targetX,y:body.y},route=popcornRoute(body,goal,body.radius+2),waypoint=route[0]||goal,dx=waypoint.x-body.x;wantedX=Math.abs(dx)>4?Math.sign(dx)*54:0;body.facing=Math.sign(wantedX)||body.facing;}
+}else{const previousRoll=creatureBodies.find(b=>b.id===body.followId);if(previousRoll){const speed=Math.hypot(previousRoll.vx,previousRoll.vy),tx=speed>3?previousRoll.vx/speed:root.facing,ty=speed>3?previousRoll.vy/speed:0;wantedX=previousRoll.vx+(previousRoll.x-tx*29-body.x)*3;wantedY=previousRoll.vy+(previousRoll.y-ty*29-body.y)*3;body.facing=root.facing;}}
+if(root.wanderPause>0){wantedX=0;wantedY=0;}
+// Traction acts along the surface; thrown or unsupported rolls retain free motion.
+if(support.nx!==0)body.ay+=Math.max(-350,Math.min(350,(wantedY-body.vy)*6));else body.ax+=Math.max(-350,Math.min(350,(wantedX-body.vx)*6));
+const angle=Math.atan2(support.nx,-support.ny);body.angle+=Math.atan2(Math.sin(angle-body.angle),Math.cos(angle-body.angle))*(1-Math.exp(-8*dt));
+}else{body.gravity=850;body.surfaceKind=null;const previousRoll=creatureBodies.find(b=>b.id===body.followId);if(previousRoll){body.ax+=Math.max(-90,Math.min(90,(previousRoll.x-body.x)*2));}body.angle*=Math.exp(-2*dt)}
+}
+
+function drawSushi(){
+const fillings=['#ed967c','#a7bd65','#e7b762','#d4a3c1','#dcca68','#92b9a4','#d57863'];
+for(const bond of sushi.bonds){if(!bond.active)continue;const a=creatureBodies.find(b=>b.id===bond.a),b=creatureBodies.find(b=>b.id===bond.b);if(a&&b)line(a,b,3,'#e9d8ae')}
+for(const body of creatureBodies){if(body.kind!=='sushi'||!body.active)continue;
+g.fillStyle='#0003';g.beginPath();g.ellipse(body.x,ground+2,15,3,0,0,Math.PI*2);g.fill();
+g.save();g.translate(body.x,body.y);g.rotate(body.angle);const phase=body.walkPhase;
+for(const side of [-1,1])for(let leg=0;leg<2;leg++){const offset=side*(6+leg*4),step=Math.sin(phase+leg*1.4+side)*3;line({x:offset,y:9},{x:offset+step,y:15},2,'#637746');line({x:offset+step,y:15},{x:offset+step+side*3,y:16},2,'#c9b67d')}
+g.scale(body.facing,1);
+g.fillStyle='#253e31';g.beginPath();roundedRect(-14,-13,28,26,7);g.fill();g.strokeStyle='#6b8060';g.lineWidth=1;g.stroke();
+g.fillStyle='#e9e7cf';g.beginPath();roundedRect(-10,-10,20,20,6);g.fill();
+for(let i=0;i<10;i++){const a=i*2.399+body.index;g.fillStyle=i%2?'#fff8e6':'#c9caaa';g.beginPath();g.ellipse(Math.cos(a)*7,Math.sin(a)*7,1.7,.8,a,0,Math.PI*2);g.fill()}
+g.fillStyle=fillings[body.index%7];g.beginPath();g.arc(0,0,5.5,0,Math.PI*2);g.fill();g.fillStyle='#799452';g.fillRect(-2,-5,2,8);g.fillStyle='#f0ce81';g.fillRect(1,-1,3,3);
+if(body.isHead){g.fillStyle='#223023';g.fillRect(5,-5,2,3);g.fillRect(9,-4,2,3);g.strokeStyle='#94a66b';g.lineWidth=1.3;g.beginPath();g.moveTo(7,-12);g.lineTo(10,-18);g.moveTo(2,-12);g.lineTo(2,-17);g.stroke();g.fillStyle='#e9d7a4';g.beginPath();g.arc(10,-18,1.6,0,Math.PI*2);g.fill();g.beginPath();g.arc(2,-17,1.6,0,Math.PI*2);g.fill()}
+if(body.hooked){g.strokeStyle='#96d4bc';g.lineWidth=1.5;g.beginPath();roundedRect(-16,-15,32,30,8);g.stroke()}
+g.restore();
+}
+}
+
+function addCreatureBody(options={}){
+const body={id:nextCreatureId++,kind:'creature',x:100,y:ground-12,vx:0,vy:0,ax:0,ay:0,radius:12,mass:1,gravity:850,drag:.15,restitution:.15,friction:.15,angle:0,angularVelocity:0,active:true,hooked:false,hookGroup:null,think:null,onImpact:null,contacts:new Set(),impactCooldown:0,...options};
+body.mass=Math.max(.05,body.mass);body.radius=Math.max(2,body.radius);creatureBodies.push(body);return body;
+}
+function steerCreature(body,target,acceleration=180){
+const dx=target.x-body.x,dy=target.y-body.y,d=Math.hypot(dx,dy)||1;body.ax+=dx/d*acceleration;body.ay+=dy/d*acceleration;
+}
+function impulseCreature(body,ix,iy){body.vx+=ix/body.mass;body.vy+=iy/body.mass;}
+function creatureContact(body,surface,nx,ny,depth,contacts){
+body.x+=nx*Math.max(0,depth);body.y+=ny*Math.max(0,depth);
+const into=body.vx*nx+body.vy*ny,speed=Math.max(0,-into);
+if(into<0){const bounce=-(1+body.restitution)*into;body.vx+=nx*bounce;body.vy+=ny*bounce;const tangent=body.vx*(-ny)+body.vy*nx;body.vx-=(-ny)*tangent*body.friction;body.vy-=nx*tangent*body.friction;}
+contacts.add(surface);
+if(!body.contacts.has(surface)&&speed>0&&body.impactCooldown<=0&&body.onImpact){body.onImpact({surface,speed,normal:{x:nx,y:ny},body});body.impactCooldown=.12;}
+}
+function resolveCreatureWorld(body,previous,contacts=new Set()){
+const r=body.radius;
+if(body.x<18+r)creatureContact(body,'left-wall',1,0,18+r-body.x,contacts);
+if(body.x>W-18-r)creatureContact(body,'right-wall',-1,0,body.x-(W-18-r),contacts);
+if(body.y<60+r)creatureContact(body,'ceiling',0,1,60+r-body.y,contacts);
+if(body.y>ground-r)creatureContact(body,'floor',0,-1,body.y-(ground-r),contacts);
+for(const p of roomPlatforms())resolveCreaturePlatform(body,p,contacts);return contacts;
+}
+function resolveCreaturePlatform(body,p,contacts){const r=body.radius;const nearX=Math.max(p.x,Math.min(p.x+p.w,body.x)),nearY=Math.max(p.y,Math.min(p.y+p.h,body.y)),dx=body.x-nearX,dy=body.y-nearY,d=Math.hypot(dx,dy);
+if(d>=r)return;
+if(d>.0001)creatureContact(body,'platform',dx/d,dy/d,r-d,contacts);
+else{
+const sides=[{d:body.y-p.y,nx:0,ny:-1},{d:p.y+p.h-body.y,nx:0,ny:1},{d:body.x-p.x,nx:-1,ny:0},{d:p.x+p.w-body.x,nx:1,ny:0}].sort((a,b)=>a.d-b.d),side=sides[0];creatureContact(body,'platform',side.nx,side.ny,r+side.d,contacts);
+}
+}
+
+function stepCreatureBody(body,dt){
+if(!body.active)return;
+body.impactCooldown=Math.max(0,body.impactCooldown-dt);
+if(body.kind==='pancake'){body.hurtCooldown=Math.max(0,body.hurtCooldown-dt);body.hitFlash=Math.max(0,body.hitFlash-dt);body.stunTime=Math.max(0,body.stunTime-dt);body.huntPause=Math.max(0,(body.huntPause||0)-dt);body.pursuitUntil=Math.max(0,body.pursuitUntil-dt);}
+if(body.think&&!body.hooked)body.think(body,dt,{platform:middlePlatform(),width:W,floor:ground});
+body.vx+=body.ax*dt;body.vy+=(body.ay+body.gravity)*dt;body.ax=body.ay=0;
+const drag=Math.exp(-body.drag*dt);body.vx*=drag;body.vy*=drag;body.angle+=body.angularVelocity*dt;body.angularVelocity*=Math.exp(-.2*dt);
+const substeps=Math.max(1,Math.min(24,Math.ceil(Math.hypot(body.vx,body.vy)*dt/(body.radius*.45)))),step=dt/substeps,contacts=new Set();
+for(let i=0;i<substeps;i++){const previous={x:body.x,y:body.y};body.x+=body.vx*step;body.y+=body.vy*step;resolveCreatureWorld(body,previous,contacts)}
+body.contacts=contacts;
+}
+function collideCreaturePair(a,b){
+if(!a.active||!b.active)return;const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.001,limit=a.radius+b.radius;if(d>=limit)return;
+const nx=d>.001?dx/d:1,ny=d>.001?dy/d:0,ia=1/a.mass,ib=1/b.mass,sum=ia+ib,depth=limit-d;
+a.x-=nx*depth*ia/sum;a.y-=ny*depth*ia/sum;b.x+=nx*depth*ib/sum;b.y+=ny*depth*ib/sum;
+const relative=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;if(relative<0){const j=-(1+Math.min(a.restitution,b.restitution))*relative/sum;impulseCreature(a,-nx*j,-ny*j);impulseCreature(b,nx*j,ny*j)}
+}
+function linkCreatureBodies(a,b,options={}){const link={a:a.id,b:b.id,length:Math.hypot(b.x-a.x,b.y-a.y),breakStretch:Infinity,active:true,...options};creatureLinks.push(link);return link;}
+function solveCreatureLinks(){
+for(let pass=0;pass<4;pass++)for(const link of creatureLinks){if(!link.active)continue;const a=creatureBodies.find(b=>b.id===link.a),b=creatureBodies.find(b=>b.id===link.b);if(!a||!b||!a.active||!b.active){link.active=false;continue}const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1;if(d>link.length*link.breakStretch){link.active=false;continue}const ia=1/a.mass,ib=1/b.mass,f=(d-link.length)/d;a.x+=dx*f*ia/(ia+ib);a.y+=dy*f*ia/(ia+ib);b.x-=dx*f*ib/(ia+ib);b.y-=dy*f*ib/(ia+ib);}
+}
+function collideCreatureRobot(){
+if(robotErased)return;
+for(const body of creatureBodies){if(!body.active)continue;const closestX=Math.max(x-14,Math.min(x+14,body.x)),closestY=Math.max(y-145,Math.min(y,body.y));let dx=body.x-closestX,dy=body.y-closestY,d=Math.hypot(dx,dy),nx,ny,depth;if(d>=body.radius)continue;
+if(d>.001){nx=dx/d;ny=dy/d;depth=body.radius-d}else{nx=body.x>=x?1:-1;ny=0;depth=14+body.radius-Math.abs(body.x-x)}
+const share=10/(10+body.mass);body.x+=nx*depth*share;body.y+=ny*depth*share;x-=nx*depth*(1-share);y-=ny*depth*(1-share);
+const relative=(body.vx-vx)*nx+(body.vy-vy)*ny;if(relative<0){const j=-relative*(1+body.restitution);body.vx+=nx*j*share;body.vy+=ny*j*share;vx-=nx*j*(1-share);vy-=ny*j*(1-share)}
+resolveCreatureWorld(body,{x:body.x,y:body.y});
+}
+}
+function tryPunchCreatures(){
+if(punch.time<=0||robotErased)return;const elapsed=.30-punch.time;if(elapsed<.065||elapsed>.21)return;
+const raw=nodes['hand'+punch.side],co=Math.cos(robotRotation),si=Math.sin(robotRotation),dx=raw.x-x,dy=raw.y-y+68,fist={x:x+dx*co-dy*si,y:y-68+dx*si+dy*co};
+if(!punch.creatureHits)punch.creatureHits=[];
+for(const body of creatureBodies){if(!body.active||punch.creatureHits.includes(body.id)||Math.hypot(body.x-fist.x,body.y-fist.y)>body.radius+7)continue;const angle=punch.angle+robotRotation;impulseCreature(body,Math.cos(angle)*280,Math.sin(angle)*280-50);body.angularVelocity+=Math.sin(angle)*2;punch.creatureHits.push(body.id);if(body.onPunch)body.onPunch({body,fist})}
+}
+function updateCreaturePhysics(dt){
+updateSushiAI(dt);
+for(const body of creatureBodies){const wasSupported=body.kind==='frog'&&frogSupported(body);stepCreatureBody(body,dt);if(body.kind==='frog'){if(!wasSupported&&frogSupported(body))body.landingSquish=1;updateFrogTongue(body,dt);}}
+for(let i=0;i<creatureBodies.length;i++)for(let j=i+1;j<creatureBodies.length;j++)collideCreaturePair(creatureBodies[i],creatureBodies[j]);
+solveCreatureLinks();
+for(const body of creatureBodies)if(body.active)resolveCreatureWorld(body,{x:body.x,y:body.y});
+}
+function resetCreaturePhysics(){rayCrashParticles.length=0;creatureLinks.length=0;for(const body of creatureBodies)body.hooked=false;creatureBodies.length=0;nextCreatureId=1;}
+function segmentCreatureHit(ax,ay,bx,by,ignoreId=null){
+const dx=bx-ax,dy=by-ay,len=dx*dx+dy*dy;let best=null;
+for(const body of creatureBodies){if(!body.active||body.id===ignoreId)continue;const t=len?Math.max(0,Math.min(1,((body.x-ax)*dx+(body.y-ay)*dy)/len)):0,hx=ax+dx*t,hy=ay+dy*t;if(Math.hypot(hx-body.x,hy-body.y)<=body.radius+2&&(!best||t<best.t))best={x:hx,y:hy,t,bodyId:body.id}}
+return best;
+}
+function hookedCreatureGroup(){
+const anchor=creatureBodies.find(b=>b.id===grapple.bodyId&&b.active);if(!anchor)return [];
+return anchor.hookGroup?creatureBodies.filter(b=>b.active&&anchor.hookGroup.includes(b.id)):[anchor];
+}
+function attachCreatureHook(hit){
+const body=creatureBodies.find(b=>b.id===hit.bodyId);if(!body)return;
+Object.assign(grapple,{state:'attached',target:'creature',bodyId:body.id,offsetX:hit.x-body.x,offsetY:hit.y-body.y,ax:hit.x,ay:hit.y,x:hit.x,y:hit.y});grapple.length=Math.max(65,routedLength());for(const b of hookedCreatureGroup())b.hooked=true;
+document.getElementById('inputStatus').textContent='Creature hooked';
+}
+function pullCreatureHook(dt){
+const group=hookedCreatureGroup(),anchor=creatureBodies.find(b=>b.id===grapple.bodyId);if(!anchor||!group.length){releaseHook();return}
+grapple.ax=anchor.x+grapple.offsetX;grapple.ay=anchor.y+grapple.offsetY;
+const oldLength=grapple.length;grapple.length=Math.max(65,grapple.length-175*dt);const reel=(oldLength-grapple.length)/dt,pull=hookPullPoint(),dx=pull.x-x,dy=pull.y-(y-75),distance=Math.hypot(dx,dy)||1;
+if(distance>grapple.length){const nx=dx/distance,ny=dy/distance,remote=foldHookVector({x:nx,y:ny}),excess=distance-grapple.length,mass=group.reduce((sum,b)=>sum+b.mass,0),share=10/(10+mass);
+let gvx=0,gvy=0;for(const b of group){gvx+=b.vx*b.mass;gvy+=b.vy*b.mass}
+const localVelocity=unfoldHookVelocity({x:gvx/mass,y:gvy/mass}),radial=(localVelocity.x-vx)*nx+(localVelocity.y-vy)*ny;
+for(const b of group){b.hookTension=Math.max(excess/dt,radial+reel);const previous={x:b.x,y:b.y};b.x-=remote.x*excess*share;b.y-=remote.y*excess*share;if(radial>-reel){b.vx-=remote.x*(radial+reel)*share;b.vy-=remote.y*(radial+reel)*share}resolveCreatureWorld(b,previous);}
+x+=nx*excess*(1-share);y+=ny*excess*(1-share);if(radial>-reel){vx+=nx*(radial+reel)*(1-share);vy+=ny*(radial+reel)*(1-share)}
+}
+else for(const b of group)b.hookTension=0;
+clampHookPlayer();grapple.ax=grapple.x=anchor.x+grapple.offsetX;grapple.ay=grapple.y=anchor.y+grapple.offsetY;
+}
+
+function middlePlatform(){return {x:W/2-80,y:(60+ground)/2,w:160,h:18}}
+let extraPlatforms=false;
+function roomPlatforms(){const center=middlePlatform();if(!extraPlatforms)return [center];return [{x:W/2-280,y:center.y+70,w:120,h:18},center,{x:W/2+160,y:center.y-70,w:120,h:18}]}
+function rayPlatformOne(point,direction,p){
+const hits=[];
+if(Math.abs(direction.x)>.0001)for(const edge of [p.x,p.x+p.w]){const t=(edge-point.x)/direction.x,yy=point.y+direction.y*t;if(t>.01&&yy>=p.y&&yy<=p.y+p.h)hits.push(t)}
+if(Math.abs(direction.y)>.0001)for(const edge of [p.y,p.y+p.h]){const t=(edge-point.y)/direction.y,xx=point.x+direction.x*t;if(t>.01&&xx>=p.x&&xx<=p.x+p.w)hits.push(t)}
+return hits.length?Math.min(...hits):null;
+}
+function rayPlatform(point,direction){const hits=roomPlatforms().map(p=>rayPlatformOne(point,direction,p)).filter(v=>v!==null);return hits.length?Math.min(...hits):null;}
+function collidePlatformOne(oldX,oldY,p){
+const half=14,height=145;
+if(x+half<=p.x||x-half>=p.x+p.w||y<=p.y||y-height>=p.y+p.h)return;
+if(oldY<=p.y&&y>=p.y){y=p.y;vy=Math.min(0,vy);onGround=gravityDirection>0;return}
+if(oldY-height>=p.y+p.h&&y-height<=p.y+p.h){y=p.y+p.h+height;vy=Math.max(0,vy);onGround=gravityDirection<0;return}
+if(oldX+half<=p.x){x=p.x-half;vx=Math.min(0,vx);return}
+if(oldX-half>=p.x+p.w){x=p.x+p.w+half;vx=Math.max(0,vx);return}
+const distances=[{d:y-p.y,side:'top'},{d:p.y+p.h-(y-height),side:'bottom'},{d:x+half-p.x,side:'left'},{d:p.x+p.w-(x-half),side:'right'}].sort((a,b)=>a.d-b.d);
+const side=distances[0].side;if(side==='top'){y=p.y;vy=Math.min(0,vy);onGround=gravityDirection>0}else if(side==='bottom'){y=p.y+p.h+height;vy=Math.max(0,vy)}else if(side==='left'){x=p.x-half;vx=Math.min(0,vx)}else{x=p.x+p.w+half;vx=Math.max(0,vx)}
+}
+function collidePlatform(oldX,oldY){for(const p of roomPlatforms())collidePlatformOne(oldX,oldY,p)}
+function collideRagdollPlatformOne(n,radius,p){if(n.x+radius<=p.x||n.x-radius>=p.x+p.w||n.y+radius<=p.y||n.y-radius>=p.y+p.h)return;
+const sides=[{d:n.y+radius-p.y,side:0},{d:p.y+p.h-(n.y-radius),side:1},{d:n.x+radius-p.x,side:2},{d:p.x+p.w-(n.x-radius),side:3}].sort((a,b)=>a.d-b.d);
+if(sides[0].side===0){n.y=p.y-radius;n.py=n.y}else if(sides[0].side===1){n.y=p.y+p.h+radius;n.py=n.y}else if(sides[0].side===2){n.x=p.x-radius;n.px=n.x}else{n.x=p.x+p.w+radius;n.px=n.x}
+}
+function collideRagdollPlatform(n,radius){for(const p of roomPlatforms())collideRagdollPlatformOne(n,radius,p)}
+
+let enableGlitchPortals=false;
+let glitchPortal=null,robotErased=false,drawingDuplicate=false,glitchCooldown=0,gravityDirection=1;
+const duplicates=[];
+const portalBeams=[];
+let simulatingDuplicate=false;
+function mergeOverlappingPortals(){
+if(!enableGlitchPortals)return;
+const a=portals.green,b=portals.purple;
+if(a&&b&&a.wall===b.wall&&Math.hypot(a.x-b.x,a.y-b.y)<=.75){
+glitchPortal={...a,color:'glitch'};portals.green=portals.purple=null;releaseHook();document.getElementById('inputStatus').textContent='Glitch portal formed · Enter at your own risk';
+}
+}
+function createDuplicate(){
+const p=glitchPortal;const clone={x:x+p.nx*100,y:y+p.ny*100,vx:vx,vy:vy,facing,rotation:robotRotation,gravity:gravityDirection,pose:{}};
+clone.x=Math.max(50,Math.min(W-50,clone.x));clone.y=Math.max(205,Math.min(ground,clone.y));
+for(const [id,n] of Object.entries(nodes))clone.pose[id]={x:n.x-x,y:n.y-y};
+duplicates.push(clone);
+}
+function updateGlitch(dt){
+if(!enableGlitchPortals)return;
+glitchCooldown=Math.max(0,glitchCooldown-dt);
+if(!glitchPortal||robotErased||glitchCooldown>0)return;
+const p=glitchPortal,normal=(x-p.x)*p.nx+(y-68-p.y)*p.ny,tangent=(x-p.x)*(-p.ny)+(y-68-p.y)*p.nx,incoming=vx*p.nx+vy*p.ny;
+if(normal>0||normal< -65||Math.abs(tangent)>58||incoming>=0)return;
+glitchCooldown=1.2;releaseHook();
+if(Math.random()<.25){robotErased=true;ragdoll.active=false;punch.time=0;document.getElementById('inputStatus').textContent='ERASED BY GLITCH · Press Restart';}
+else{
+const incomingX=vx,incomingY=vy;
+createDuplicate();
+const flipsGravity=p.wall==='floor';if(flipsGravity)gravityDirection*=-1;robotRotation=gravityDirection<0?Math.PI:0;
+x=p.x+p.nx*83+(-p.ny)*tangent;y=p.y+p.ny*83+p.nx*tangent+68;
+// Reflect the whole incoming motion, rather than launching along a fixed axis.
+vx=-incomingX;vy=-incomingY;
+const clone=duplicates[duplicates.length-1];clone.vx=vx;clone.vy=vy;clone.gravity=gravityDirection;clone.rotation=robotRotation;
+ragdoll.active=false;ragdoll.recoveryGrace=.7;onGround=false;
+for(const id of Object.keys(nodes))delete nodes[id];links.length=0;setup();
+document.getElementById('inputStatus').textContent=flipsGravity?'Duplicated · Motion reversed · Gravity flipped!':'Duplicated · Motion reversed!';
+}
+}
+function captureRobot(){
+const nodeState={};for(const [id,n] of Object.entries(nodes))nodeState[id]={...n};
+return {x,y,vx,vy,facing,onGround,phase,rotation:robotRotation,gravity:gravityDirection,headAngle,pupilX,pupilY,erased:robotErased,glitchCooldown,portalCooldown:playerPortalCooldown,nodeState,punchState:{...punch},ragdollState:{...ragdoll},grappleState:JSON.parse(JSON.stringify(grapple))};
+}
+function loadRobot(state){
+x=state.x;y=state.y;vx=state.vx;vy=state.vy;facing=state.facing;onGround=state.onGround??false;phase=state.phase||0;robotRotation=state.rotation||0;gravityDirection=state.gravity||1;headAngle=state.headAngle||0;pupilX=state.pupilX||0;pupilY=state.pupilY||0;robotErased=!!state.erased;glitchCooldown=state.glitchCooldown??1.2;playerPortalCooldown=state.portalCooldown||0;
+Object.assign(punch,state.punchState||{time:0,cooldown:0,angle:0,side:'R',hit:false});Object.assign(ragdoll,state.ragdollState||{active:false,recoveryGrace:.7});
+if(state.grappleState)Object.assign(grapple,state.grappleState);else{grapple.state='idle';grapple.hops=[];grapple.segments=[];grapple.target=null}
+for(const id of Object.keys(nodes))delete nodes[id];
+if(state.nodeState){for(const [id,n] of Object.entries(state.nodeState))nodes[id]={...n}}else{links.length=0;setup()}
+}
+function withDuplicate(clone,action){
+const saved=captureRobot(),wasSimulating=simulatingDuplicate;
+loadRobot(clone);simulatingDuplicate=true;
+try{action()}finally{Object.assign(clone,captureRobot());loadRobot(saved);simulatingDuplicate=wasSimulating}
+}
+function updateDuplicates(dt){for(const clone of [...duplicates])withDuplicate(clone,()=>update(dt));}
+function drawDuplicates(){
+for(const clone of duplicates)withDuplicate(clone,()=>{drawRobot()});
+}
+function drawGlitchPortal(){
+if(!enableGlitchPortals)return;
+if(!glitchPortal)return;const p=glitchPortal;
+g.save();g.translate(p.x,p.y);g.rotate(p.nx?0:Math.PI/2);
+g.fillStyle='#090d16';g.beginPath();g.ellipse(0,0,13,74,0,0,Math.PI*2);g.fill();
+for(let i=0;i<13;i++){const shift=Math.sin(clock*37+i*13)*5,color=['#8aff77','#cf80ff','#e8ffff'][i%3];g.strokeStyle=color;g.lineWidth=2;g.beginPath();g.moveTo(-10+shift,-68+i*11);g.lineTo(10+shift,-68+i*11);g.stroke()}
+g.shadowColor='#cb80ff';g.shadowBlur=14;g.strokeStyle=clock% .2<.1?'#abf987':'#cf8cff';g.lineWidth=3;g.beginPath();g.ellipse(Math.sin(clock*31)*2,0,12,75,0,0,Math.PI*2);g.stroke();g.restore();
+}
+function restartGame(){
+rollCreatureLineup();
+resetCreaturePhysics();spawnSushi();spawnPancake();spawnFrog();
+resetPopcorn();
+equippedGun=enablePortalGun?'portal':'grapple';
+releaseHook();robotErased=false;ragdoll.active=false;ragdoll.recoveryGrace=.5;duplicates.length=0;portalBeams.length=0;spider.ready=false;spider.chunks=spider.maxChunks;spider.eaten=false;spider.eatCooldown=0;spider.biteTime=0;foodCrumbs.length=0;spider.knockbackTimer=0;spider.surface='platform';spider.surfaceIndex=1;spider.surfaceAge=0;spider.jump=null;spider.jumpCooldown=2;spider.jumpCheck=0;spider.legBrains=[];spider.crawling=true;spider.crawlDistance=80;glitchPortal=null;glitchCooldown=0;portals.green=portals.purple=null;portalShot.time=0;playerPortalCooldown=0;punch.time=punch.cooldown=0;
+gravityDirection=1;x=Math.min(380,W/2);y=ground;vx=vy=robotRotation=headAngle=0;facing=1;onGround=true;for(const key in keys)keys[key]=false;for(const id of Object.keys(nodes))delete nodes[id];links.length=0;setup();gunStatus();
+}
+
+// Retain the cake spider implementation, but disable spawning.
+let spawnCakeSpider=true;
+let cakeCrawlsPlatform=true;
+let cakeSpiderCanJump=true;
+const ragdoll={active:false,recoveryGrace:0};
+let hardImpactRagdoll=true;
+function wallImpactRagdoll(nx,ny){
+const impact=-(vx*nx+vy*ny);
+if(!hardImpactRagdoll||ragdoll.active||ragdoll.recoveryGrace>0||impact<340)return false;
+// Keep tangential momentum, with a small recoil away from the surface.
+vx+=nx*impact*1.25;vy+=ny*impact*1.25;enterRagdoll();return true;
+}
+function rotateBodyNodes(angle){
+const cx=x,cy=y-68,cos=Math.cos(angle),sin=Math.sin(angle);
+for(const n of Object.values(nodes)){
+for(const pair of [['x','y'],['px','py']]){const dx=n[pair[0]]-cx,dy=n[pair[1]]-cy;n[pair[0]]=cx+dx*cos-dy*sin;n[pair[1]]=cy+dx*sin+dy*cos}
+}
+}
+function enterRagdoll(){
+ragdoll.active=true;releaseHook();punch.time=0;
+rotateBodyNodes(robotRotation);robotRotation=0;
+for(const [id,n] of Object.entries(nodes)){
+// Give each part the robot's momentum plus a small tumbling motion.
+const spin=(n.y-(y-68))*.65;n.px=n.x-(vx-spin)/60;n.py=n.y-(vy+(n.x-x)*.65)/60;
+}
+onGround=false;document.getElementById('inputStatus').textContent='Ragdoll · Press any key to stand up';
+}
+function recoverRagdoll(){
+if(!ragdoll.active)return;
+ragdoll.active=false;ragdoll.recoveryGrace=.8;releaseHook();robotRotation=gravityDirection<0?Math.PI:0;headAngle=0;
+// Recover at the ragdoll's current location, keeping its flight momentum.
+// Only resolve nearby solid boundaries where the upright body would overlap.
+if(!portalOpening('left',x,y-68))x=Math.max(50,x);
+if(!portalOpening('right',x,y-68))x=Math.min(W-50,x);
+if(y>ground&&!portalOpening('floor',x,y-68)){y=ground;vy=Math.min(0,vy)}
+const recoveryTop=gravityDirection<0?196:205;if(y<recoveryTop&&!portalOpening('ceiling',x,y-68)){y=recoveryTop;vy=Math.max(0,vy)}
+onGround=gravityDirection>0?y>=ground&&vy>=0&&!portalOpening('floor',x,y-68):y<=196&&vy<=0&&!portalOpening('ceiling',x,y-68);
+for(const key in keys)keys[key]=false;
+for(const id of Object.keys(nodes))delete nodes[id];links.length=0;setup();
+document.getElementById('inputStatus').textContent='Back on your feet · Controls active';
+}
+document.addEventListener('keydown',e=>{if(ragdoll.active){e.preventDefault();if(e.stopImmediatePropagation)e.stopImmediatePropagation();if(!e.repeat){recoverRagdoll();for(const clone of [...duplicates])withDuplicate(clone,()=>{if(ragdoll.active)recoverRagdoll()})}}},true);
+function updateRagdoll(dt){
+for(const n of Object.values(nodes)){
+const dx=(n.x-n.px)*.993,dy=(n.y-n.py)*.993;n.px=n.x;n.py=n.y;n.x+=dx;n.y+=dy+1000*gravityDirection*dt*dt;
+}
+for(let i=0;i<10;i++){
+for(const link of links){const a=nodes[link.a],b=nodes[link.b],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,f=(d-link.len)/d*.5;a.x+=dx*f;a.y+=dy*f;b.x-=dx*f;b.y-=dy*f}
+for(const [id,n] of Object.entries(nodes)){
+const radius=id==='head'?17:3;collideRagdollPlatform(n,radius);
+if(n.y>ground-radius&&!portalOpening('floor',n.x,n.y)){const speedX=n.x-n.px,speedY=n.y-n.py;n.y=ground-radius;n.py=n.y+Math.max(0,speedY)*.12;n.px=n.x-speedX*.73}
+if(n.x<18+radius&&!portalOpening('left',n.x,n.y)){n.x=18+radius;n.px=n.x}
+if(n.x>W-18-radius&&!portalOpening('right',n.x,n.y)){n.x=W-18-radius;n.px=n.x}
+if(n.y<60+radius&&!portalOpening('ceiling',n.x,n.y)){n.y=60+radius;n.py=n.y}
+}
+}
+collidePopcornRagdoll();const beforeX=x,beforeY=y;x=(nodes.chest.x+nodes.hips.x)/2;y=(nodes.chest.y+nodes.hips.y)/2+68;vx=(x-beforeX)/dt;vy=(y-beforeY)/dt;
+onGround=false;updatePortals(dt);updateGlitch(dt);if(robotErased)return;
+if(robotRotation){rotateBodyNodes(robotRotation);robotRotation=0}
+headAngle=Math.atan2((nodes.head.x-nodes.neck.x)*facing,-(nodes.head.y-nodes.neck.y));
+// Loose body contact transfers momentum to the movable cake spider.
+if(cakeAlive())for(const n of Object.values(nodes)){const dx=spider.x-n.x,dy=spider.y-n.y,d=Math.hypot(dx,dy)||1;if(d<21){spider.x+=dx/d*(21-d)*.7;spider.y+=dy/d*(21-d)*.7;spider.vx+=(n.x-n.px)/dt*.08;spider.vy+=(n.y-n.py)/dt*.08}}
+}
+
+// Keep the grappling implementation available, but disable it for the portal game.
+let enableGrapplingGun=true;
+let enablePortalGun=false;
+let equippedGun=enableGrapplingGun?'grapple':'portal',portalColor='green',playerPortalCooldown=0;
+const portals={green:null,purple:null},portalShot={time:0,sx:0,sy:0,x:0,y:0,color:'green'};
+function gunStatus(){document.getElementById('inputStatus').textContent=equippedGun==='grapple'?'Grappling gun equipped':'Portal gun · '+portalColor+' selected · E / F: next option'}
+function cycleGun(){
+if(robotErased)return;
+if(!enablePortalGun){equippedGun='grapple';gunStatus();return}
+releaseHook();
+if(!enableGrapplingGun){equippedGun='portal';portalColor=portalColor==='green'?'purple':'green';gunStatus();return}
+if(equippedGun==='grapple'){equippedGun='portal';portalColor='green'}
+else if(portalColor==='green'){portalColor='purple'}
+else{equippedGun='grapple'}
+gunStatus();
+}
+document.addEventListener('keydown',e=>{if(e.repeat)return;const code=keyCode(e);if(code==='KeyE'||code==='KeyF'){e.preventDefault();cycleGun()}},true);
+function firePortal(){
+if(!enablePortalGun||robotErased||ragdoll.active)return;
+const origin=gunHand(),dx=mouse.x-origin.x,dy=mouse.y-origin.y,d=Math.hypot(dx,dy);if(d<2)return;
+const ux=dx/d,uy=dy/d,hits=[];
+if(ux<-.0001)hits.push({t:(18-origin.x)/ux,wall:'left',nx:1,ny:0});
+if(ux>.0001)hits.push({t:(W-18-origin.x)/ux,wall:'right',nx:-1,ny:0});
+if(uy<-.0001)hits.push({t:(60-origin.y)/uy,wall:'ceiling',nx:0,ny:1});
+if(uy>.0001)hits.push({t:(ground-origin.y)/uy,wall:'floor',nx:0,ny:-1});
+const hit=hits.filter(h=>h.t>0).sort((a,b)=>a.t-b.t)[0];if(!hit)return;
+let px=origin.x+ux*hit.t,py=origin.y+uy*hit.t;
+if(hit.nx)py=Math.max(145,Math.min(ground-85,py));else px=Math.max(110,Math.min(W-110,px));
+portals[portalColor]={x:px,y:py,nx:hit.nx,ny:hit.ny,wall:hit.wall,color:portalColor};
+portalBeams.push({time:.16,sx:origin.x,sy:origin.y,x:px,y:py,color:portalColor});Object.assign(portalShot,{time:.16,sx:origin.x,sy:origin.y,x:px,y:py,color:portalColor});gunStatus();mergeOverlappingPortals();
+}
+function portalOpening(wall,px,py){
+if(enableGlitchPortals&&glitchPortal&&glitchPortal.wall===wall&&Math.abs((px-glitchPortal.x)*(-glitchPortal.ny)+(py-glitchPortal.y)*glitchPortal.nx)<58)return true;
+if(!portals.green||!portals.purple)return false;
+return Object.values(portals).some(p=>p.wall===wall&&Math.abs((px-p.x)*(-p.ny)+(py-p.y)*p.nx)<58);
+}
+function portalMatrix(a,b){
+// Fold the normal while preserving the tangent: a local space is joined to b.
+const atx=-a.ny,aty=a.nx,btx=-b.ny,bty=b.nx;
+const m11=-btx*atx-b.nx*a.nx,m12=-bty*atx-b.ny*a.nx;
+const m21=-btx*aty-b.nx*a.ny,m22=-bty*aty-b.ny*a.ny;
+return [m11,m12,m21,m22,b.x-m11*a.x-m21*a.y,b.y-m12*a.x-m22*a.y];
+}
+function clipRoom(){g.beginPath();g.rect(18,60,W-36,ground-60);g.clip()}
+function drawPortalViews(){
+if(!portals.green||!portals.purple)return;
+for(const [a,b] of [[portals.green,portals.purple],[portals.purple,portals.green]]){
+g.save();g.beginPath();g.ellipse(a.x,a.y,a.nx?8:70,a.nx?70:8,0,0,Math.PI*2);g.clip();
+const m=portalMatrix(b,a);g.transform(...m);drawBackground();drawSpider();drawFoodCrumbs();drawPopcorn();drawSushi();drawPancake();drawRayCrashEffects();drawFrog();drawRobot();drawDuplicates();g.restore();
+}
+}
+function drawCrossingParts(){
+if(!portals.green||!portals.purple)return;
+for(const [a,b] of [[portals.green,portals.purple],[portals.purple,portals.green]]){
+const robotN=(x-a.x)*a.nx+(y-68-a.y)*a.ny,robotT=(x-a.x)*(-a.ny)+(y-68-a.y)*a.nx;
+const spiderN=(spider.x-a.x)*a.nx+(spider.y-a.y)*a.ny,spiderT=(spider.x-a.x)*(-a.ny)+(spider.y-a.y)*a.nx;
+g.save();clipRoom();
+// Restrict the duplicate to the opening's width, not the entire opposite wall.
+g.beginPath();if(b.nx)g.rect(18,b.y-74,W-36,148);else g.rect(b.x-74,60,148,ground-60);g.clip();
+g.transform(...portalMatrix(a,b));
+if(Math.abs(robotN)<155&&Math.abs(robotT)<74)drawRobot();
+if(Math.abs(spiderN)<65&&Math.abs(spiderT)<74)drawSpider();
+g.restore();
+}
+}
+function portalTransfer(px,py,pvx,pvy,radius){
+if(!portals.green||!portals.purple)return null;
+for(const [a,b] of [[portals.green,portals.purple],[portals.purple,portals.green]]){
+const dx=px-a.x,dy=py-a.y,normal=dx*a.nx+dy*a.ny,tangent=dx*(-a.ny)+dy*a.nx;
+const incoming=pvx*a.nx+pvy*a.ny;
+if(normal>0||normal < -55||Math.abs(tangent)>58||incoming>=0)continue;
+const tangential=pvx*(-a.ny)+pvy*a.nx,speed=-incoming;
+return {x:b.x+b.nx*(-normal+.5)+b.ny*tangent,y:b.y+b.ny*(-normal+.5)-b.nx*tangent,entryColor:a.color,rotation:Math.atan2(portalMatrix(a,b)[1],portalMatrix(a,b)[0]),
+vx:b.nx*speed+b.ny*tangential,vy:b.ny*speed-b.nx*tangential};
+}return null;
+}
+function updatePortals(dt){
+if(onGround&&playerPortalCooldown<=0){const target=gravityDirection<0?Math.PI:0;const difference=Math.atan2(Math.sin(target-robotRotation),Math.cos(target-robotRotation));robotRotation+=difference*(1-Math.exp(-7*dt));}
+playerPortalCooldown=Math.max(0,playerPortalCooldown-dt);spider.portalCooldown=Math.max(0,(spider.portalCooldown||0)-dt);if(!simulatingDuplicate)portalShot.time=Math.max(0,portalShot.time-dt);
+if(playerPortalCooldown<=0){const result=portalTransfer(x,y-68,vx,vy,68);if(result){
+const oldX=x,oldY=y;x=result.x;y=result.y+68;vx=result.vx;vy=result.vy;robotRotation+=result.rotation;robotRotation=Math.atan2(Math.sin(robotRotation),Math.cos(robotRotation));onGround=y>=ground;playerPortalCooldown=.16;hookPlayerCross(result);
+for(const n of Object.values(nodes)){n.x+=x-oldX;n.px+=x-oldX;n.y+=y-oldY;n.py+=y-oldY}
+}}
+if(!simulatingDuplicate&&spawnCakeSpider&&spider.portalCooldown<=0&&spider.ready){const result=portalTransfer(spider.x,spider.y,spider.vx,spider.vy,25);if(result){
+spider.x=result.x;spider.y=result.y;spider.vx=result.vx;spider.vy=result.vy;spider.target=spider.x+Math.sign(result.vx||1)*140;spider.portalCooldown=.16;if(grapple.target==='spider')releaseHook();
+}}
+}
+function drawPortals(){
+for(const portal of Object.values(portals)){if(!portal)continue;
+g.save();g.translate(portal.x,portal.y);g.rotate(portal.nx?0:Math.PI/2);
+const color=portal.color==='green'?'#8af067':'#be7eff';g.shadowColor=color;g.shadowBlur=16;g.strokeStyle=color;g.lineWidth=3.5;
+g.fillStyle=portal.color==='green'?'#123a2e':'#302342';g.beginPath();g.ellipse(0,0,9,74,0,0,Math.PI*2);if(!portals.green||!portals.purple)g.fill();g.stroke();g.shadowBlur=0;
+g.strokeStyle=portal.color==='green'?'#d1ffb4':'#e5c4ff';g.lineWidth=1;g.beginPath();g.ellipse(0,0,5,67,0,0,Math.PI*2);g.stroke();
+for(let i=0;i<5;i++){const angle=clock*1.8+i*Math.PI*.4;g.fillStyle=color;g.beginPath();g.arc(Math.cos(angle)*5,Math.sin(angle)*64,1.5,0,Math.PI*2);g.fill()}
+g.restore();
+}
+for(const beam of portalBeams)line({x:beam.sx,y:beam.sy},{x:beam.x,y:beam.y},2,beam.color==='green'?'#9cff87':'#cd99ff');
+}
+
+// One passive four-legged cake spider. Its wandering never targets the player.
+const spiderSize=1.6;
+const spider={x:760,y:0,vx:0,vy:0,target:760,timer:0,phase:0,face:-1,ready:false,legs:[],bodyY:0,crawling:true,crawlDistance:80,crawlDirection:1,crawlAngle:0,surface:'platform',surfaceIndex:1,surfaceAge:0,jump:null,jumpCooldown:2,jumpCheck:0,legBrains:[],knockbackTimer:0,eatCooldown:0,biteTime:0,chaseTarget:null,chunks:6,maxChunks:6,eaten:false};
+function cakeAlive(){return spawnCakeSpider&&spider.ready&&!spider.eaten&&spider.chunks>0;}
+function updateSpider(dt){
+if(!spawnCakeSpider||spider.eaten)return;
+spider.knockbackTimer=Math.max(0,spider.knockbackTimer-dt);spider.eatCooldown=Math.max(0,spider.eatCooldown-dt);spider.biteTime=Math.max(0,spider.biteTime-dt);
+spider.jumpCooldown=Math.max(0,spider.jumpCooldown-dt);spider.jumpCheck=Math.max(0,spider.jumpCheck-dt);
+spider.chaseTarget=cakeHuntsPopcorn?nearestPopcorn():null;
+if(spider.jump){updateSpiderJump(dt);return;}
+if(cakeCrawlsPlatform&&spider.crawling){updateSpiderCrawler(dt);return;}
+
+const left=portals.green&&portals.purple?43:85,right=Math.max(left+20,W-left);
+if(!spider.ready){spider.x=Math.max(left,Math.min(right,W*.76));spider.target=spider.x;spider.y=ground-40;spider.timer=.6;spider.ready=true}
+spider.timer-=dt;
+if(spider.timer<=0){
+if(Math.random()<.25){spider.target=spider.x;spider.timer=.6+Math.random()*1.2}
+else{spider.target=left+Math.random()*(right-left);spider.timer=2+Math.random()*4}
+}
+spider.target=Math.max(left,Math.min(right,spider.target));
+if(spider.chaseTarget&&spider.knockbackTimer<=0)spider.target=spider.chaseTarget.x;
+const delta=spider.target-spider.x,desired=Math.abs(delta)>7?Math.sign(delta)*(spider.chaseTarget?82:68):0;
+const grounded=spider.y>=ground-40-.5;
+if(grounded&&spider.knockbackTimer<=0){spider.vx+=Math.max(-150,Math.min(150,(desired-spider.vx)*3))*dt;spider.vx*=Math.exp(-.25*dt)}else spider.vx*=Math.exp(-.12*dt);
+const previousSpiderX=spider.x,previousSpiderY=spider.y;spider.vy+=850*dt;spider.x+=spider.vx*dt;spider.y+=spider.vy*dt;
+if(spider.y>ground-40&&!portalOpening('floor',spider.x,spider.y)){spider.y=ground-40;spider.vy=0}
+if(spider.y<85&&!portalOpening('ceiling',spider.x,spider.y)){spider.y=85;spider.vy=Math.max(0,spider.vy)}
+if(spider.x<left&&!portalOpening('left',spider.x,spider.y)){spider.x=left;spider.vx=Math.abs(spider.vx)*.3;spider.target=right}
+if(spider.x>right&&!portalOpening('right',spider.x,spider.y)){spider.x=right;spider.vx=-Math.abs(spider.vx)*.3;spider.target=left}
+if(Math.abs(spider.vx)>2)spider.face=spider.vx>0?1:-1;
+collideSpiderPlatform(previousSpiderX,previousSpiderY);
+if(cakeCrawlsPlatform&&spider.knockbackTimer<=0&&grapple.target!=='spider'&&(attachPlatformCrawler()||attachRoomCrawler())){updateSpiderCrawler(0);return}
+spider.phase+=Math.abs(spider.vx)*dt/21;updateLegBrains(dt);buildSpiderPose();
+}
+function spiderPlatform(){return roomPlatforms()[spider.surfaceIndex??1]||middlePlatform()}
+function platformCrawlPoint(distance){
+const p=spiderPlatform(),r=25*spiderSize,q=Math.PI*r/2,total=2*(p.w+p.h)+4*q;
+let s=((distance%total)+total)%total;
+const linePart=(length,sx,sy,tx,ty,nx,ny)=>{if(s<=length)return {x:sx+tx*s,y:sy+ty*s,tx,ty,nx,ny};s-=length;return null};
+const arcPart=(cx,cy,start)=>{if(s<=q){const a=start+s/r;return {x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r,tx:-Math.sin(a),ty:Math.cos(a),nx:Math.cos(a),ny:Math.sin(a)}}s-=q;return null};
+return linePart(p.w,p.x,p.y-r,1,0,0,-1)||arcPart(p.x+p.w,p.y,-Math.PI/2)||linePart(p.h,p.x+p.w+r,p.y,0,1,1,0)||arcPart(p.x+p.w,p.y+p.h,0)||linePart(p.w,p.x+p.w,p.y+p.h+r,-1,0,0,1)||arcPart(p.x,p.y+p.h,Math.PI/2)||linePart(p.h,p.x-r,p.y+p.h,0,-1,-1,0)||arcPart(p.x,p.y,Math.PI)||{x:p.x,y:p.y-r,tx:1,ty:0,nx:0,ny:-1};
+}
+function roomCrawlPoint(distance){
+const left=58,right=W-58,top=100,bottom=ground-40,r=20,w=right-left-2*r,h=bottom-top-2*r,q=Math.PI*r/2,total=2*(w+h)+4*q;
+let s=((distance%total)+total)%total;
+const segment=(len,x,y,tx,ty,nx,ny)=>{if(s<=len)return {x:x+tx*s,y:y+ty*s,tx,ty,nx,ny};s-=len;return null};
+const arc=(cx,cy,start)=>{if(s<=q){const a=start+s/r;return {x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r,tx:-Math.sin(a),ty:Math.cos(a),nx:-Math.cos(a),ny:-Math.sin(a)}}s-=q;return null};
+return segment(w,left+r,top,1,0,0,1)||arc(right-r,top+r,-Math.PI/2)||segment(h,right,top+r,0,1,-1,0)||arc(right-r,bottom-r,0)||segment(w,right-r,bottom,-1,0,0,-1)||arc(left+r,bottom-r,Math.PI/2)||segment(h,left,bottom-r,0,-1,1,0)||arc(left+r,top+r,Math.PI)||{x:left+r,y:top,tx:1,ty:0,nx:0,ny:1};
+}
+function crawlPoint(distance){return spider.surface==='room'?roomCrawlPoint(distance):platformCrawlPoint(distance)}
+function closestRoomContact(px,py){
+const edges=[{d:Math.abs(px-18),x:18,y:Math.max(60,Math.min(ground,py))},{d:Math.abs(px-(W-18)),x:W-18,y:Math.max(60,Math.min(ground,py))},{d:Math.abs(py-60),x:Math.max(18,Math.min(W-18,px)),y:60},{d:Math.abs(py-ground),x:Math.max(18,Math.min(W-18,px)),y:ground}];return edges.sort((a,b)=>a.d-b.d)[0];
+}
+function collideSpiderPlatformOne(oldX,oldY,p){
+const r=24;if(spider.x+r<=p.x||spider.x-r>=p.x+p.w||spider.y+r<=p.y||spider.y-r>=p.y+p.h)return;
+if(oldY+r<=p.y){spider.y=p.y-r;spider.vy=-Math.abs(spider.vy)*.18;return}
+if(oldY-r>=p.y+p.h){spider.y=p.y+p.h+r;spider.vy=Math.abs(spider.vy)*.18;return}
+if(oldX+r<=p.x){spider.x=p.x-r;spider.vx=-Math.abs(spider.vx)*.3;return}
+if(oldX-r>=p.x+p.w){spider.x=p.x+p.w+r;spider.vx=Math.abs(spider.vx)*.3;return}
+const sides=[{d:spider.y+r-p.y,side:0},{d:p.y+p.h-spider.y+r,side:1},{d:spider.x+r-p.x,side:2},{d:p.x+p.w-spider.x+r,side:3}].sort((a,b)=>a.d-b.d);
+if(sides[0].side===0){spider.y=p.y-r;spider.vy=Math.min(0,spider.vy)}else if(sides[0].side===1){spider.y=p.y+p.h+r;spider.vy=Math.max(0,spider.vy)}else if(sides[0].side===2){spider.x=p.x-r;spider.vx=Math.min(0,spider.vx)}else{spider.x=p.x+p.w+r;spider.vx=Math.max(0,spider.vx)}
+}
+function collideSpiderPlatform(oldX,oldY){for(const p of roomPlatforms())collideSpiderPlatformOne(oldX,oldY,p)}
+function attachPlatformCrawler(){
+const platforms=roomPlatforms();let nearest=null,bestDistance=Infinity;
+for(let index=0;index<platforms.length;index++){const p=platforms[index],nx=Math.max(p.x,Math.min(p.x+p.w,spider.x)),ny=Math.max(p.y,Math.min(p.y+p.h,spider.y)),d=Math.hypot(spider.x-nx,spider.y-ny);if(d<bestDistance){nearest={p,index};bestDistance=d}}
+if(!nearest||bestDistance>42)return false;
+spider.surfaceIndex=nearest.index;const p=nearest.p,total=2*(p.w+p.h)+2*Math.PI*40;let best=0,distance=Infinity;
+for(let i=0;i<256;i++){const sample=i*total/256,point=platformCrawlPoint(sample),d=Math.hypot(spider.x-point.x,spider.y-point.y);if(d<distance){best=sample;distance=d}}
+spider.surface='platform';spider.crawling=true;spider.crawlDistance=best;spider.surfaceAge=0;spider.legBrains=[];spider.timer=2;return true;
+}
+
+function attachRoomCrawler(){
+const edge=closestRoomContact(spider.x,spider.y);if(edge.d>42)return false;
+const total=2*((W-116-40)+(ground-140-40))+2*Math.PI*20;
+let best=0,bestDistance=Infinity;for(let i=0;i<512;i++){const sample=i*total/512,p=roomCrawlPoint(sample),distance=Math.hypot(p.x-spider.x,p.y-spider.y);if(distance<bestDistance){best=sample;bestDistance=distance}}
+spider.surface='room';spider.crawling=true;spider.crawlDistance=best;spider.surfaceAge=0;spider.legBrains=[];spider.timer=2;return true;
+}
+function nearestPopcorn(){let nearest=null,best=Infinity;for(const grain of popcorn.grains){const d=Math.hypot(grain.x-spider.x,grain.y-spider.y);if(d<best){nearest=grain;best=d}}return nearest}
+function crawlPerimeterLength(){const p=spiderPlatform();return spider.surface==='room'?2*((W-116-40)+(ground-140-40))+2*Math.PI*20:2*(p.w+p.h)+2*Math.PI*40}
+function chaseAlongSurface(){
+const food=spider.chaseTarget;if(!food||spider.knockbackTimer>0)return;
+const total=crawlPerimeterLength();let best=0,cost=Infinity;
+for(let i=0;i<128;i++){const sample=i*total/128,point=crawlPoint(sample),distance=Math.hypot(point.x-food.x,point.y-food.y);if(distance<cost){cost=distance;best=sample}}
+const current=((spider.crawlDistance%total)+total)%total,forward=(best-current+total)%total,backward=total-forward;
+if(Math.min(forward,backward)>7)spider.crawlDirection=forward<backward?1:-1;
+spider.pause=0;
+}
+function eatNearbyPopcorn(dt){
+for(let i=foodCrumbs.length-1;i>=0;i--){const crumb=foodCrumbs[i];crumb.time-=dt;crumb.x+=crumb.vx*dt;crumb.y+=crumb.vy*dt;crumb.vy+=200*dt;if(crumb.time<=0)foodCrumbs.splice(i,1)}
+if(!cakeHuntsPopcorn||!cakeAlive()||spider.eatCooldown>0||spider.knockbackTimer>0)return;
+const grain=nearestPopcorn();if(!grain||Math.hypot(grain.x-spider.x,grain.y-spider.y)>28+grain.r)return;
+const index=popcorn.grains.indexOf(grain);if(index<0)return;
+popcorn.grains.splice(index,1);spider.eatCooldown=.65;spider.biteTime=.3;
+for(let i=0;i<6;i++)foodCrumbs.push({x:grain.x,y:grain.y,vx:(Math.random()-.5)*90,vy:-30-Math.random()*60,time:.45});
+if(!popcorn.grains.length&&grapple.target==='popcorn')releaseHook();
+document.getElementById('inputStatus').textContent='Cake ate one popcorn · '+popcorn.grains.length+' remaining';
+}
+function drawFoodCrumbs(){for(const c of foodCrumbs){g.fillStyle='#efdaaa';g.fillRect(c.x,c.y,2,2)}}
+function updateSpiderCrawler(dt){
+if(!spider.ready){spider.ready=true;spider.crawlDistance=spiderPlatform().w/2;spider.crawlDirection=1;spider.timer=2;}
+spider.timer-=dt;if(spider.timer<=0){const roll=Math.random();if(roll<.15)spider.crawlDirection*=-1;spider.pause=roll>.85?.4:0;spider.timer=2+Math.random()*3;}
+chaseAlongSurface();spider.pause=Math.max(0,(spider.pause||0)-dt);const speed=spider.pause>0?0:spider.chaseTarget?82:68;
+spider.surfaceAge+=dt;spider.crawlDistance+=spider.crawlDirection*speed*dt;const point=crawlPoint(spider.crawlDistance);
+spider.x=point.x;spider.y=point.y;spider.vx=point.tx*speed*spider.crawlDirection;spider.vy=point.ty*speed*spider.crawlDirection;spider.face=spider.surface==='room'?-spider.crawlDirection:spider.crawlDirection;spider.crawlAngle=Math.atan2(point.nx,-point.ny);spider.phase+=speed*dt/21;updateLegBrains(dt);buildSpiderPose();
+if(trySpiderJump())return;
+// Drop from the underside after exploring the platform, then cling to the floor.
+if(spider.surface==='platform'&&point.ny>.85&&(spider.surfaceAge>12||(spider.chaseTarget&&spider.chaseTarget.y>spiderPlatform().y+70&&spider.surfaceAge>1))){spider.crawling=false;spider.knockbackTimer=.6;spider.vx=spider.crawlDirection*45;spider.vy=70;spider.legBrains=[];}
+}
+// One bounded ballistic leap, followed by four seconds of recovery on a surface.
+function spiderJumpClear(x,y){
+if(x<42||x>W-42||y<84||y>ground-24)return false;
+return roomPlatforms().every(p=>Math.hypot(x-Math.max(p.x,Math.min(p.x+p.w,x)),y-Math.max(p.y,Math.min(p.y+p.h,y)))>=26);
+}
+function trySpiderJump(){
+if(!cakeSpiderCanJump||!spider.crawling||spider.jump||spider.jumpCooldown>0||spider.jumpCheck>0||spider.surfaceAge<.8||spider.knockbackTimer>0||grapple.target==='spider')return false;
+spider.jumpCheck=.6;
+const source=crawlPoint(spider.crawlDistance),oldIndex=spider.surfaceIndex,candidates=[];
+for(const surface of ['room','platform'])for(let index=0;index<(surface==='room'?1:roomPlatforms().length);index++){
+spider.surfaceIndex=index;
+const p=spiderPlatform(),total=surface==='room'?2*((W-156)+(ground-180))+2*Math.PI*20:2*(p.w+p.h)+2*Math.PI*40;
+for(let i=0;i<Math.ceil(total/32);i++){
+const distance=i*total/Math.ceil(total/32),point=surface==='room'?roomCrawlPoint(distance):platformCrawlPoint(distance);
+const dx=point.x-spider.x,dy=point.y-spider.y,range=Math.hypot(dx,dy);
+if(range<85||range>360||(surface===spider.surface&&(surface==='room'||index===oldIndex)))continue;
+for(const duration of [.4,.55,.7,.85]){
+const vx=dx/duration,vy=dy/duration-425*duration;
+if(Math.hypot(vx,vy)>850||vx*source.nx+vy*source.ny<35||vx*point.nx+(vy+850*duration)*point.ny> -25)continue;
+let clear=true;
+for(let step=1;step<=Math.ceil(duration/.012);step++){
+const t=duration*step/Math.ceil(duration/.012);
+if(!spiderJumpClear(spider.x+vx*t,spider.y+vy*t+425*t*t)){clear=false;break;}
+}
+if(!clear)continue;
+const food=spider.chaseTarget;
+const score=food?Math.hypot(point.x-food.x,point.y-food.y):range+Math.random()*140;
+if(food&&score>Math.hypot(spider.x-food.x,spider.y-food.y)-35)continue;
+candidates.push({surface,index,distance,point,duration,vx,vy,score});break;
+}
+}
+}
+spider.surfaceIndex=oldIndex;
+if(!candidates.length)return false;
+candidates.sort((a,b)=>a.score-b.score);const plan=candidates[0];
+spider.jump={...plan,startX:spider.x,startY:spider.y,elapsed:0};spider.crawling=false;spider.legBrains=[];spider.vx=plan.vx;spider.vy=plan.vy;spider.jumpCooldown=4;
+return true;
+}
+function updateSpiderJump(dt){
+const jump=spider.jump;if(!jump)return;
+jump.elapsed=Math.min(jump.duration,jump.elapsed+dt);const t=jump.elapsed;
+spider.x=jump.startX+jump.vx*t;spider.y=jump.startY+jump.vy*t+425*t*t;
+spider.vx=jump.vx;spider.vy=jump.vy+850*t;spider.face=spider.vx>=0?1:-1;
+spider.phase+=dt*5;updateLegBrains(dt);buildSpiderPose();
+if(t>=jump.duration){
+spider.surface=jump.surface;spider.surfaceIndex=jump.index;spider.crawlDistance=jump.distance;spider.crawling=true;spider.jump=null;
+spider.surfaceAge=0;spider.jumpCooldown=4;spider.legBrains=[];updateSpiderCrawler(0);
+}
+}
+function legGoal(index){
+const side=index%2===0?-1:1,back=index<2;
+if(cakeCrawlsPlatform&&spider.crawling){
+// Each foot looks ahead along the actual platform surface, including corners.
+const lead=spider.crawlDirection*(8+index*2),sample=crawlPoint(spider.crawlDistance+(spider.surface==='room'?-side:side)*(back?28:41)+lead);
+let fx=sample.x-sample.nx*40,fy=sample.y-sample.ny*40;if(spider.surface==='room'){const contact=closestRoomContact(fx,fy);fx=contact.x;fy=contact.y}
+return {x:fx,y:fy,nx:sample.nx,ny:sample.ny};
+}
+return {x:spider.x+side*(back?35:43)+spider.vx*.11,y:Math.min(ground-1,spider.y+39),nx:0,ny:-1};
+}
+function legHip(index){const side=index%2===0?-1:1;
+if(cakeCrawlsPlatform&&spider.crawling){const co=Math.cos(spider.crawlAngle),si=Math.sin(spider.crawlAngle);return {x:spider.x+co*side*16-si*5,y:spider.y+si*side*16+co*5}}
+return {x:spider.x+side*16,y:spider.y+5};
+}
+function ensureLegBrains(){
+if(spider.legBrains.length===4)return;
+spider.legBrains=Array.from({length:4},(_,index)=>{const goal=legGoal(index);return {index,foot:{x:goal.x,y:goal.y},from:{x:goal.x,y:goal.y},goal:{...goal},mode:'planted',progress:0,cooldown:index*.035,duration:.14+index*.027,steps:0}});
+}
+function updateLegBrains(dt){
+ensureLegBrains();
+for(const brain of spider.legBrains){
+brain.cooldown=Math.max(0,brain.cooldown-dt);
+const hip=legHip(brain.index),desired=legGoal(brain.index),reach=Math.hypot(brain.foot.x-hip.x,brain.foot.y-hip.y),drift=Math.hypot(brain.foot.x-desired.x,brain.foot.y-desired.y);
+const side=brain.index%2===0?-1:1,axis=legSideAxis();
+const wrongSide=((brain.foot.x-spider.x)*axis.x+(brain.foot.y-spider.y)*axis.y)*side<8;
+if(wrongSide&&brain.mode==='planted'){brain.goal={...desired};brain.from={...brain.foot};brain.mode='stepping';brain.progress=0;brain.steps++;brain.cooldown=0;}
+if(brain.mode==='planted'){
+const otherSteps=spider.legBrains.filter(b=>b!==brain&&b.mode==='stepping').length;
+// Keep support feet planted; independently step when stretched or left behind.
+if(brain.cooldown<=0&&((drift>13+brain.index*1.7&&otherSteps<2)||reach>71)){
+brain.mode='stepping';brain.progress=0;brain.from={...brain.foot};brain.goal={...desired};brain.steps++;
+}
+}
+if(brain.mode==='stepping'){
+brain.progress=Math.min(1,brain.progress+dt/brain.duration);const t=brain.progress,smooth=t*t*(3-2*t),lift=Math.sin(t*Math.PI)*(7+brain.index);
+brain.foot.x=brain.from.x+(brain.goal.x-brain.from.x)*smooth+brain.goal.nx*lift;
+brain.foot.y=brain.from.y+(brain.goal.y-brain.from.y)*smooth+brain.goal.ny*lift;
+if(t>=1){brain.foot={x:brain.goal.x,y:brain.goal.y};brain.mode='planted';brain.cooldown=.045+brain.index*.013}
+}
+}
+}
+function legSideAxis(){return cakeCrawlsPlatform&&spider.crawling?{x:Math.cos(spider.crawlAngle),y:Math.sin(spider.crawlAngle)}:{x:1,y:0}}
+function keepLegOnSide(point,side,margin=12){
+const axis=legSideAxis(),along=(point.x-spider.x)*axis.x+(point.y-spider.y)*axis.y;
+if(along*side<margin){const correction=side*margin-along;point.x+=axis.x*correction;point.y+=axis.y*correction}
+return point;
+}
+function buildSpiderPose(){
+ensureLegBrains();spider.legs=[];spider.bodyY=spider.y;
+for(let index=0;index<4;index++){
+const side=index%2===0?-1:1,back=index<2,hip=legHip(index),foot=keepLegOnSide({...spider.legBrains[index].foot},side,18);
+const dx=foot.x-hip.x,dy=foot.y-hip.y,length=Math.hypot(dx,dy)||1,d=Math.min(59.99,length),bend=Math.sqrt(Math.max(0,30*30-d*d/4));
+const axis=legSideAxis(),mid={x:hip.x+dx/length*d/2,y:hip.y+dy/length*d/2};
+const perpendicular={x:dy/length*bend,y:-dx/length*bend};
+const bendSign=(perpendicular.x*axis.x+perpendicular.y*axis.y)*side>=0?1:-1;
+const knee=keepLegOnSide({x:mid.x+perpendicular.x*bendSign,y:mid.y+perpendicular.y*bendSign},side);
+const normal=cakeCrawlsPlatform&&spider.crawling?crawlPoint(spider.crawlDistance):{nx:0,ny:-1};
+const ankle={x:knee.x+(foot.x-knee.x)*.45+normal.nx*5,y:knee.y+(foot.y-knee.y)*.45+normal.ny*5};
+const toeJoint={x:ankle.x+(foot.x-ankle.x)*.52+normal.nx*3,y:ankle.y+(foot.y-ankle.y)*.52+normal.ny*3};
+keepLegOnSide(ankle,side);keepLegOnSide(toeJoint,side);spider.legs.push({hip,knee,ankle,toeJoint,foot,back});
+}
+}
+function cakeLegSegment(a,b,back){
+const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,nx=-dy/d,ny=dx/d;
+line(a,b,10,back?'#684736':'#76513a');line(a,b,7,back?'#af855a':'#d0a272');
+// Cream filling and a raised icing strip run through every cake segment.
+line(a,b,2.1,back?'#d6c6a1':'#fff0ce');
+line({x:a.x+nx*2.5,y:a.y+ny*2.5},{x:b.x+nx*2.5,y:b.y+ny*2.5},1.5,back?'#c69b9e':'#e9b5c1');
+for(const t of [.3,.7]){const cx=a.x+dx*t,cy=a.y+dy*t;line({x:cx-nx*2,y:cy-ny*2},{x:cx+nx*2,y:cy+ny*2},.8,back?'#9b6f4c':'#b18051')}
+}
+function spiderLeg(leg){
+for(const [a,b] of [[leg.hip,leg.knee],[leg.knee,leg.ankle],[leg.ankle,leg.toeJoint],[leg.toeJoint,leg.foot]])cakeLegSegment(a,b,leg.back);
+for(const point of [leg.hip,leg.knee,leg.ankle,leg.toeJoint]){g.fillStyle=leg.back?'#9a7260':'#bd8d72';g.beginPath();g.arc(point.x,point.y,4.4,0,Math.PI*2);g.fill();g.fillStyle=leg.back?'#d6c5a4':'#fff0d0';g.beginPath();g.arc(point.x,point.y,2.8,0,Math.PI*2);g.fill();g.fillStyle='#d39ba8';g.beginPath();g.arc(point.x-.6,point.y-.6,1.2,0,Math.PI*2);g.fill()}
+line(leg.foot,{x:leg.foot.x+(leg.foot.x>spider.x?5:-5),y:leg.foot.y},4,leg.back?'#cabc9c':'#eee0be');
+}
+function drawSpider(){
+if(!cakeAlive())return;
+buildSpiderPose();if(!spider.crawling||!cakeCrawlsPlatform){g.fillStyle='#0004';g.beginPath();g.ellipse(spider.x,ground+2,27,3.5,0,0,Math.PI*2);g.fill();}
+for(const leg of spider.legs)if(leg.back)spiderLeg(leg);
+g.save();g.translate(spider.x,spider.bodyY);if(cakeCrawlsPlatform&&spider.crawling)g.rotate(spider.crawlAngle);const cakeScale=spiderSize*(.72+.28*spider.chunks/spider.maxChunks);g.scale(spider.face*cakeScale,cakeScale);
+// Cut real gaps from the cake artwork as chunks are eaten.
+g.beginPath();g.rect(-20,-22,40,46);const missing=[{x:14,y:0},{x:-12,y:-5},{x:9,y:-10},{x:-8,y:7},{x:2,y:3},{x:2,y:-7}];for(let i=0;i<spider.maxChunks-spider.chunks;i++){const bite=missing[i];g.moveTo(bite.x+5.5,bite.y);g.arc(bite.x,bite.y,5.5,0,Math.PI*2)}g.clip('evenodd');
+// Cake body with sponge layers, frosting, and a cherry.
+g.fillStyle='#513b30';g.beginPath();roundedRect(-15,-9,30,19,3);g.fill();
+g.fillStyle='#b88f5d';g.fillRect(-13,-4,26,12);g.fillStyle='#e4d4aa';g.fillRect(-13,0,26,3);
+g.fillStyle='#e9e3d0';g.beginPath();roundedRect(-16,-11,32,9,3);g.fill();
+for(let i=0;i<4;i++){g.beginPath();roundedRect(-13+i*7,-5,4,6-(i%2)*2,2);g.fill()}
+g.fillStyle='#c77285';for(const dot of [{x:-9,y:-8},{x:2,y:-6},{x:10,y:-8}])g.fillRect(dot.x,dot.y,2,1);
+g.fillStyle='#b85e62';g.beginPath();g.arc(1,-13,3,0,Math.PI*2);g.fill();
+g.strokeStyle='#879c63';g.lineWidth=1;g.beginPath();g.moveTo(1,-15);g.quadraticCurveTo(1,-19,5,-18);g.stroke();
+g.fillStyle='#252e2e';g.fillRect(5,-1,2,3);g.fillRect(11,-1,2,3);g.beginPath();roundedRect(6,4,6,spider.biteTime>0?4+Math.sin(spider.biteTime*30)*2:1.5,1);g.fill();
+g.restore();for(const leg of spider.legs)if(!leg.back)spiderLeg(leg);
+}
+
+const punch={time:0,cooldown:0,angle:0,side:'R',hit:false};
+function tryPunchSpider(){
+if(!cakeAlive()||punch.time<=0||punch.hit)return;
+const raw=nodes['hand'+punch.side],co=Math.cos(robotRotation),si=Math.sin(robotRotation),dx=raw.x-x,dy=raw.y-(y-68);
+const fist={x:x+dx*co-dy*si,y:y-68+dx*si+dy*co};const t=.30-punch.time,previous=punch.previousFist||fist;
+punch.previousFist={...fist};if(t<.065||t>.21)return;
+const sx=fist.x-previous.x,sy=fist.y-previous.y,len=sx*sx+sy*sy;
+const along=len?Math.max(0,Math.min(1,((spider.x-previous.x)*sx+(spider.y-previous.y)*sy)/len)):0;
+if(Math.hypot(previous.x+sx*along-spider.x,previous.y+sy*along-spider.y)>35)return;
+const angle=punch.angle+robotRotation;spider.jump=null;spider.crawling=false;spider.legBrains=[];spider.knockbackTimer=.75;
+spider.vx=Math.cos(angle)*310+vx*.2;spider.vy=Math.sin(angle)*310-65;
+punch.hit=true;document.getElementById('inputStatus').textContent='Cake spider punched!';
+}
+function startPunch(){if(robotErased||ragdoll.active||punch.cooldown>0)return;const shoulder=nodes['shoulder'+(facing>0?'R':'L')];punch.side=facing>0?'R':'L';punch.angle=mouse.active?Math.atan2(mouse.y-shoulder.y,mouse.x-shoulder.x):(facing>0?0:Math.PI);punch.time=.30;punch.cooldown=.38;punch.hit=false;punch.previousFist=null;punch.creatureHits=[];document.getElementById('inputStatus').textContent='Punch';}
+c.addEventListener('pointerdown',e=>{if(e.button===0){e.preventDefault();aimAt(e);c.focus();startPunch()}});
+const grapple={hops:[],segments:[],segmentIndex:0,segmentTravel:0,target:null,offsetX:0,offsetY:0,state:'idle',x:0,y:0,ax:0,ay:0,length:0,travel:0,total:0,sx:0,sy:0};
+function gunHand(){const n=nodes['hand'+(facing>0?'L':'R')];if(Math.abs(robotRotation)<1e-8)return n;const dx=n.x-x,dy=n.y-(y-68),co=Math.cos(robotRotation),si=Math.sin(robotRotation);return {x:x+dx*co-dy*si,y:y-68+dx*si+dy*co}}
+function aimAt(e){const r=c.getBoundingClientRect();mouse.x=(e.clientX-r.left)*W/r.width;mouse.y=(e.clientY-r.top)*H/r.height;mouse.active=true}
+function releaseHook(){if(grapple.target==='creature')for(const body of hookedCreatureGroup()){body.hooked=false;body.hookTension=0;}if(grapple.target==='popcorn')releasePopcornTow();grapple.state='idle';grapple.target=null;grapple.hops=[];grapple.segments=[];document.getElementById('inputStatus').textContent='Grapple released';}
+function mapPoint(point,a,b){const m=portalMatrix(a,b);return {x:m[0]*point.x+m[2]*point.y+m[4],y:m[1]*point.x+m[3]*point.y+m[5]}}
+function mapVector(vector,a,b){const m=portalMatrix(a,b);return {x:m[0]*vector.x+m[2]*vector.y,y:m[1]*vector.x+m[3]*vector.y}}
+function unfoldHook(point){for(let i=grapple.hops.length-1;i>=0;i--){const h=grapple.hops[i];point=mapPoint(point,h.exit,h.entry)}return point}
+function foldHookVector(vector){for(const h of grapple.hops)vector=mapVector(vector,h.entry,h.exit);return vector}
+function routedLength(){let point={x:x,y:y-75},length=0;for(const h of grapple.hops){length+=Math.hypot(point.x-h.inPoint.x,point.y-h.inPoint.y);point=h.outPoint}return length+Math.hypot(point.x-grapple.ax,point.y-grapple.ay)}
+function hookPullPoint(){
+if(!grapple.hops.length)return {x:grapple.ax,y:grapple.ay};
+const h=grapple.hops[0];let tail=0,point=h.outPoint;
+for(let i=1;i<grapple.hops.length;i++){const next=grapple.hops[i];tail+=Math.hypot(point.x-next.inPoint.x,point.y-next.inPoint.y);point=next.outPoint}
+tail+=Math.hypot(point.x-grapple.ax,point.y-grapple.ay);
+return {x:h.inPoint.x-h.entry.nx*tail,y:h.inPoint.y-h.entry.ny*tail};
+}
+function hookPlayerCross(result){
+if(grapple.state==='idle')return;
+const first=grapple.hops[0];
+if(first&&first.entry.color===result.entryColor){grapple.hops.shift();document.getElementById('inputStatus').textContent='Pulled through portal · Hook still attached'}else releaseHook();
+}
+function fireHook(){
+if(robotErased||!enableGrapplingGun||ragdoll.active)return;
+if(grapple.state!=='idle'){releaseHook();return}
+const origin=gunHand(),dx=mouse.x-origin.x,dy=mouse.y-origin.y,d=Math.hypot(dx,dy);if(d<2)return;
+let point={x:origin.x,y:origin.y},direction={x:dx/d,y:dy/d},budget=2500;const segments=[];
+for(let i=0;i<7&&budget>1;i++){
+const hits=[];if(direction.x<-.0001)hits.push({t:(18-point.x)/direction.x,wall:'left'});if(direction.x>.0001)hits.push({t:(W-18-point.x)/direction.x,wall:'right'});if(direction.y<-.0001)hits.push({t:(60-point.y)/direction.y,wall:'ceiling'});if(direction.y>.0001)hits.push({t:(ground-point.y)/direction.y,wall:'floor'});
+const platformHit=rayPlatform(point,direction);if(platformHit!==null)hits.push({t:platformHit,wall:'platform'});const hit=hits.filter(h=>h.t>.01).sort((a,b)=>a.t-b.t)[0];if(!hit)break;
+const distance=Math.min(hit.t,budget),end={x:point.x+direction.x*distance,y:point.y+direction.y*distance};
+let hop=null;
+if(distance===hit.t&&portals.green&&portals.purple){
+const entry=Object.values(portals).find(p=>p.wall===hit.wall&&Math.abs((end.x-p.x)*(-p.ny)+(end.y-p.y)*p.nx)<68);
+if(entry){const exit=portals[entry.color==='green'?'purple':'green'],mapped=mapPoint(end,entry,exit);hop={entry:{...entry},exit:{...exit},inPoint:end,outPoint:mapped}}
+}
+segments.push({start:{...point},end,length:distance,hop,direction:{...direction}});budget-=distance;
+if(!hop)break;
+direction=mapVector(direction,hop.entry,hop.exit);point={x:hop.outPoint.x+hop.exit.nx*.6,y:hop.outPoint.y+hop.exit.ny*.6};
+}
+if(!segments.length)return;
+Object.assign(grapple,{state:'flying',target:null,hops:[],segments,segmentIndex:0,segmentTravel:0,x:origin.x,y:origin.y,sx:origin.x,sy:origin.y,ax:origin.x,ay:origin.y});
+document.getElementById('inputStatus').textContent='Hook fired';
+}
+c.addEventListener('contextmenu',e=>e.preventDefault());
+c.addEventListener('pointerdown',e=>{if(e.button===2){e.preventDefault();aimAt(e);c.focus();if(equippedGun==='portal')firePortal();else fireHook()}});
+document.addEventListener('keydown',e=>{if(keyCode(e)==='KeyR'){e.preventDefault();releaseHook()}},true);
+function popcornCenter(){
+let cx=0,cy=0,cvx=0,cvy=0;for(const g of popcorn.grains){cx+=g.x;cy+=g.y;cvx+=g.vx;cvy+=g.vy}const count=popcorn.grains.length||1;return {x:cx/count,y:cy/count,vx:cvx/count,vy:cvy/count};
+}
+function segmentPopcornHit(ax,ay,bx,by){
+const dx=bx-ax,dy=by-ay,lengthSq=dx*dx+dy*dy;let best=null;
+for(const g of popcorn.grains){const t=lengthSq?Math.max(0,Math.min(1,((g.x-ax)*dx+(g.y-ay)*dy)/lengthSq)):0,hx=ax+dx*t,hy=ay+dy*t;
+if(Math.hypot(hx-g.x,hy-g.y)<=g.r+3&&(!best||t<best.t))best={x:hx,y:hy,t,id:g.id};}
+return best;
+}
+function attachPopcorn(hit){
+const center=popcornCenter();grapple.state='attached';grapple.target='popcorn';grapple.offsetX=hit.x-center.x;grapple.offsetY=hit.y-center.y;grapple.ax=grapple.x=hit.x;grapple.ay=grapple.y=hit.y;grapple.length=Math.max(65,routedLength());popcorn.mode='towed';popcorn.bridge=null;popcorn.releaseTimer=0;for(const g of popcorn.grains){g.regrouping=false;g.path=[]}
+document.getElementById('inputStatus').textContent='Popcorn colony hooked · Pulling all '+popcorn.grains.length;
+}
+function releasePopcornTow(){
+const center=popcornCenter(),p=middlePlatform();popcorn.mode='pile';popcorn.bridge=null;popcorn.level=Math.abs(center.y-p.y)<75&&center.x>p.x-30&&center.x<p.x+p.w+30?'platform':'floor';popcorn.centerX=center.x;popcorn.targetX=center.x;popcorn.timer=4;popcorn.releaseTimer=.85;
+}
+function pullPopcorn(dt){
+let center=popcornCenter();grapple.ax=center.x+grapple.offsetX;grapple.ay=center.y+grapple.offsetY;
+const oldLength=grapple.length;grapple.length=Math.max(65,grapple.length-175*dt);const reelSpeed=(oldLength-grapple.length)/dt;
+const target=hookPullPoint(),dx=target.x-x,dy=target.y-(y-75),distance=Math.hypot(dx,dy)||1;
+if(distance>grapple.length){const nx=dx/distance,ny=dy/distance,excess=distance-grapple.length,remote=foldHookVector({x:nx,y:ny});
+// Every piece receives the same pull; individual contacts still deform the pile.
+for(const g of popcorn.grains){const oldY=g.y;g.x-=remote.x*excess*.78;g.y-=remote.y*excess*.78;popcornGround(g,oldY)}
+x+=nx*excess*.22;y+=ny*excess*.22;
+const velocity=unfoldHookVelocity({x:center.vx,y:center.vy}),radial=(velocity.x-vx)*nx+(velocity.y-vy)*ny;
+if(radial>-reelSpeed){const impulse=radial+reelSpeed;for(const g of popcorn.grains){g.vx-=remote.x*impulse*.78;g.vy-=remote.y*impulse*.78}vx+=nx*impulse*.22;vy+=ny*impulse*.22}
+}
+clampHookPlayer();center=popcornCenter();popcorn.centerX=center.x;grapple.ax=grapple.x=center.x+grapple.offsetX;grapple.ay=grapple.y=center.y+grapple.offsetY;
+}
+function segmentSpiderHit(ax,ay,bx,by){
+if(!cakeAlive())return null;
+const dx=bx-ax,dy=by-ay,lengthSq=dx*dx+dy*dy;
+const t=lengthSq?Math.max(0,Math.min(1,((spider.x-ax)*dx+(spider.y-ay)*dy)/lengthSq)):0;
+const hx=ax+dx*t,hy=ay+dy*t;
+return Math.hypot(hx-spider.x,hy-spider.y)<=30?{x:hx,y:hy}:null;
+}
+function attachSpider(hit){spider.jump=null;spider.crawling=false;spider.legBrains=[];grapple.state='attached';grapple.target='spider';grapple.offsetX=hit.x-spider.x;grapple.offsetY=hit.y-spider.y;grapple.ax=grapple.x=hit.x;grapple.ay=grapple.y=hit.y;grapple.length=Math.max(65,routedLength());document.getElementById('inputStatus').textContent='Cake spider hooked · Right-click or R to release'}
+// Resolve the rope correction in small increments so cake cannot tunnel through a platform.
+function moveHookedSpider(dx,dy){
+const steps=Math.max(1,Math.ceil(Math.hypot(dx,dy)/6));
+for(let i=0;i<steps;i++){const oldX=spider.x,oldY=spider.y;spider.x+=dx/steps;spider.y+=dy/steps;collideSpiderPlatform(oldX,oldY);}
+}
+function grapplePhysics(dt){
+if(grapple.state==='flying'){
+let remaining=1250*dt;
+while(remaining>0&&grapple.state==='flying'){
+const seg=grapple.segments[grapple.segmentIndex];if(!seg){releaseHook();break}
+const oldX=grapple.x,oldY=grapple.y,step=Math.min(remaining,seg.length-grapple.segmentTravel);
+grapple.segmentTravel+=step;remaining-=step;const t=grapple.segmentTravel/seg.length;
+grapple.x=seg.start.x+(seg.end.x-seg.start.x)*t;grapple.y=seg.start.y+(seg.end.y-seg.start.y)*t;
+const hit=segmentSpiderHit(oldX,oldY,grapple.x,grapple.y),popHit=segmentPopcornHit(oldX,oldY,grapple.x,grapple.y);
+const creatureHit=segmentCreatureHit(oldX,oldY,grapple.x,grapple.y);if(creatureHit&&(!hit||Math.hypot(creatureHit.x-oldX,creatureHit.y-oldY)<Math.hypot(hit.x-oldX,hit.y-oldY))&&(!popHit||Math.hypot(creatureHit.x-oldX,creatureHit.y-oldY)<Math.hypot(popHit.x-oldX,popHit.y-oldY))){attachCreatureHook(creatureHit);break}
+if(popHit&&(!hit||Math.hypot(popHit.x-oldX,popHit.y-oldY)<Math.hypot(hit.x-oldX,hit.y-oldY))){attachPopcorn(popHit);break}
+if(hit){attachSpider(hit);break}
+if(t>=1){
+if(seg.hop&&grapple.segmentIndex<grapple.segments.length-1){grapple.hops.push(seg.hop);grapple.segmentIndex++;grapple.segmentTravel=0;const next=grapple.segments[grapple.segmentIndex];grapple.x=next.start.x;grapple.y=next.start.y;document.getElementById('inputStatus').textContent='Hook passed through portal'}
+else{grapple.state='attached';grapple.ax=grapple.x;grapple.ay=grapple.y;grapple.length=Math.max(65,routedLength());document.getElementById('inputStatus').textContent='Hook attached · Right-click or R to release'}
+}
+}
+}
+if(grapple.state!=='attached')return;
+if(grapple.target==='creature'){pullCreatureHook(dt);return}
+if(grapple.target==='popcorn'){pullPopcorn(dt);return}
+if(grapple.target==='spider'){
+grapple.ax=spider.x+grapple.offsetX;grapple.ay=spider.y+grapple.offsetY;
+const oldLength=grapple.length;grapple.length=Math.max(65,grapple.length-175*dt);const objectReelSpeed=(oldLength-grapple.length)/dt;
+const pull=hookPullPoint(),dx=pull.x-x,dy=pull.y-(y-75),distance=Math.hypot(dx,dy)||1;
+if(distance>grapple.length){const nx=dx/distance,ny=dy/distance,excess=distance-grapple.length;
+// The cake is lighter: most of the rope correction moves it toward the robot.
+const remoteNormal=foldHookVector({x:nx,y:ny});moveHookedSpider(-remoteNormal.x*excess*.8,-remoteNormal.y*excess*.8);x+=nx*excess*.2;y+=ny*excess*.2;
+const remoteVelocity=unfoldHookVelocity({x:spider.vx,y:spider.vy});const relative=(remoteVelocity.x-vx)*nx+(remoteVelocity.y-vy)*ny;
+if(relative>-objectReelSpeed){const impulse=(relative+objectReelSpeed);spider.vx-=remoteNormal.x*impulse*.8;spider.vy-=remoteNormal.y*impulse*.8;vx+=nx*impulse*.2;vy+=ny*impulse*.2;}
+}
+const margin=portals.green&&portals.purple?43:85;spider.x=Math.max(margin,Math.min(W-margin,spider.x));spider.y=Math.max(85,Math.min(ground-40,spider.y));
+clampHookPlayer();
+grapple.ax=grapple.x=spider.x+grapple.offsetX;grapple.ay=grapple.y=spider.y+grapple.offsetY;return;
+}
+const previousLength=grapple.length;grapple.length=Math.max(65,grapple.length-175*dt);const reelSpeed=(previousLength-grapple.length)/dt;
+const pull=hookPullPoint();let dx=x-pull.x,dy=y-75-pull.y,dist=Math.hypot(dx,dy)||1;
+if(dist>grapple.length){
+const nx=dx/dist,ny=dy/dist,excess=dist-grapple.length;
+x-=nx*excess;y-=ny*excess;
+// Match the inward speed of the winch while retaining sideways swing velocity.
+const radial=vx*nx+vy*ny;if(radial>-reelSpeed){vx+=nx*(-reelSpeed-radial);vy+=ny*(-reelSpeed-radial)}
+}
+clampHookPlayer();
+}
+function unfoldHookVelocity(vector){for(let i=grapple.hops.length-1;i>=0;i--)vector=mapVector(vector,grapple.hops[i].exit,grapple.hops[i].entry);return vector}
+function clampHookPlayer(){
+if(x<50&&!portalOpening('left',x,y-68)){x=50;wallImpactRagdoll(1,0);}if(x>W-50&&!portalOpening('right',x,y-68)){x=W-50;wallImpactRagdoll(-1,0);}
+if(y<205&&!portalOpening('ceiling',x,y-68)){y=205;if(!wallImpactRagdoll(0,1))vy=Math.max(0,vy)}
+if(y>=ground&&!portalOpening('floor',x,y-68)){y=ground;vy=0;onGround=true}else onGround=false;
+}
+function drawGrapple(){
+if(grapple.state==='idle')return;const hand=gunHand();
+let ropePoint=hand;for(const h of grapple.hops){line(ropePoint,h.inPoint,2,'#a3c7bf');ropePoint=h.outPoint}line(ropePoint,{x:grapple.x,y:grapple.y},2,'#a3c7bf');
+g.save();g.translate(grapple.x,grapple.y);g.rotate(Math.atan2(grapple.ay-grapple.sy,grapple.ax-grapple.sx));
+line({x:-7,y:0},{x:4,y:0},3,'#d0ded0');
+line({x:2,y:0},{x:-2,y:-5},2,'#d0ded0');line({x:2,y:0},{x:-2,y:5},2,'#d0ded0');g.restore();
+if(grapple.state==='attached'){g.strokeStyle='#8fd4b5';g.lineWidth=1;g.beginPath();g.arc(grapple.ax,grapple.ay,7,0,Math.PI*2);g.stroke()}
+}
+function drawGun(){const hand=gunHand();let a=ragdoll.active?Math.atan2(hand.y-nodes['elbow'+(facing>0?'L':'R')].y,hand.x-nodes['elbow'+(facing>0?'L':'R')].x):mouse.active?Math.atan2(mouse.y-hand.y,mouse.x-hand.x):(facing>0?0:Math.PI);
+g.save();g.translate(hand.x,hand.y);g.rotate(a);
+if(equippedGun==='portal'){
+const color=portalColor==='green'?'#8af067':'#be7eff';
+g.fillStyle='#16242c';g.beginPath();roundedRect(-8,-7,32,15,6);g.fill();
+g.fillStyle='#d9e2d5';g.beginPath();roundedRect(-5,-8,21,8,3);g.fill();g.beginPath();roundedRect(-5,2,21,6,3);g.fill();
+g.fillStyle='#344b4c';g.fillRect(-2,6,5,8);g.fillStyle='#17282e';g.fillRect(17,-5,10,10);
+g.shadowColor=color;g.shadowBlur=7;g.fillStyle=color;g.fillRect(5,-1,14,3);g.shadowBlur=0;
+for(const side of [-1,1]){line({x:18,y:side*6},{x:29,y:side*10},2.5,'#8caaa1');line({x:29,y:side*10},{x:34,y:side*4},2,'#d5e1cf')}
+g.restore();return;
+}
+g.fillStyle='#1a2b31';g.beginPath();roundedRect(-5,-6,26,12,3);g.fill();
+g.fillStyle='#819e9b';g.fillRect(-2,-5,19,4);g.fillStyle='#365454';g.fillRect(2,4,5,7);
+g.fillStyle='#c4d6c5';g.fillRect(18,-3,7,6);g.fillStyle='#142d30';g.fillRect(22,-2,3,4);
+g.strokeStyle='#89b6a2';g.lineWidth=2;g.beginPath();g.arc(4,0,4,0,Math.PI*2);g.stroke();
+g.fillStyle=grapple.state==='attached'?'#c8e785':'#80cbbb';g.fillRect(12,0,3,2);g.restore();
+}
+
+function node(id,x,y){nodes[id]={x,y,px:x,py:y}}
+function link(a,b,len){links.push({a,b,len})}
+function setup(){node('hips',x,y-53);node('chest',x,y-91);node('neck',x,y-104);node('head',x,y-119);for(const side of ['L','R']){let s=side==='L'?-1:1;node('shoulder'+side,x+s*13,y-92);node('elbow'+side,x+s*17,y-66);node('hand'+side,x+s*16,y-43);node('hip'+side,x+s*6,y-53);node('knee'+side,x+s*8,y-27);node('foot'+side,x+s*9,y-3);link('chest','shoulder'+side,13);link('shoulder'+side,'elbow'+side,27);link('elbow'+side,'hand'+side,25);link('hips','hip'+side,6);link('hip'+side,'knee'+side,27);link('knee'+side,'foot'+side,27)}link('hips','chest',38);link('chest','neck',13);link('neck','head',15)}
+document.addEventListener('keydown',e=>{const code=keyCode(e);if(['Space','ArrowLeft','ArrowRight','ArrowDown','KeyA','KeyD','KeyS','ShiftLeft','ShiftRight'].includes(code)){e.preventDefault();press(code)}},true);
+document.addEventListener('keyup',e=>keys[keyCode(e)]=false,true);window.addEventListener('blur',()=>{for(const k in keys)keys[k]=false});c.addEventListener('pointerdown',()=>{c.focus();document.getElementById('inputStatus').textContent='Controls active · A / D or arrow keys to move';});c.addEventListener('pointermove',e=>{const r=c.getBoundingClientRect();mouse.x=(e.clientX-r.left)*W/r.width;mouse.y=(e.clientY-r.top)*H/r.height;mouse.active=true});
+function target(id,tx,ty,strength,dt){const n=nodes[id],f=1-Math.exp(-strength*dt);n.x+=(tx-n.x)*f;n.y+=(ty-n.y)*f}
+function update(dt){if(!simulatingDuplicate){clock+=dt;for(let i=portalBeams.length-1;i>=0;i--){portalBeams[i].time-=dt;if(portalBeams[i].time<=0)portalBeams.splice(i,1)}updateCreaturePhysics(dt);updateRayCrashEffects(dt);updateSpider(dt);updatePopcorn(dt);eatNearbyPopcorn(dt);updatePancakeBites(dt);updateDuplicates(dt);}if(robotErased)return;ragdoll.recoveryGrace=Math.max(0,ragdoll.recoveryGrace-dt);
+if(!ragdoll.active&&ragdoll.recoveryGrace<=0&&Math.cos(robotRotation-(gravityDirection<0?Math.PI:0))<-.2&&(vy*gravityDirection>60||onGround))enterRagdoll();
+if(ragdoll.active){updateRagdoll(dt);return;}
+const previousX=x,previousY=y;punch.time=Math.max(0,punch.time-dt);punch.cooldown=Math.max(0,punch.cooldown-dt);let dir=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA||keys.ArrowLeft?1:0),crouch=keys.KeyS||keys.ArrowDown;let speed=crouch?65:(keys.ShiftLeft||keys.ShiftRight)?245:145;if(!onGround){vx+=dir*(grapple.state==='attached'?420:240)*dt;vx*=Math.exp(-.18*dt);vx=Math.max(-480,Math.min(480,vx))}else vx+=(dir*speed-vx)*(1-Math.exp(-12*dt));if(dir)facing=dir;x+=vx*dt;if(x<50&&!portalOpening('left',x,y-68)){x=50;if(!wallImpactRagdoll(1,0))vx=0}if(x>W-50&&!portalOpening('right',x,y-68)){x=W-50;if(!wallImpactRagdoll(-1,0))vx=0}vy+=1000*gravityDirection*dt;y+=vy*dt;onGround=false;if(y>=ground&&!portalOpening('floor',x,y-68)){y=ground;vy=Math.min(0,vy);onGround=gravityDirection>0}const topLimit=gravityDirection<0?196:205;if(y<topLimit&&!portalOpening('ceiling',x,y-68)){y=topLimit;if(!wallImpactRagdoll(0,1))vy=Math.max(0,vy);onGround=gravityDirection<0}if(ragdoll.active){updateRagdoll(dt);return;}grapplePhysics(dt);if(ragdoll.active){updateRagdoll(dt);return;}collidePopcornRobot();collideCreatureRobot();collidePlatform(previousX,previousY);updatePortals(dt);updateGlitch(dt);if(robotErased)return;
+if(cakeAlive()&&Math.abs(x-spider.x)<29&&spider.y>y-95&&spider.y<y+6){
+const side=spider.x>=x?1:-1,overlap=29-Math.abs(x-spider.x);spider.x+=side*overlap*.8;x-=side*overlap*.2;
+const closing=(vx-spider.vx)*side;if(closing>0){spider.vx+=side*closing*.8;vx-=side*closing*.2}
+}
+let moving=Math.min(1,Math.abs(vx)/120);phase+=dt*(Math.abs(vx)/15+2);let stride=Math.sin(phase)*moving,bob=onGround?Math.abs(Math.cos(phase))*moving*2:0,drop=crouch&&onGround?22:0;for(const n of Object.values(nodes)){const dx=(n.x-n.px)*.85,dy=(n.y-n.py)*.85;n.px=n.x;n.py=n.y;n.x+=dx;n.y+=dy+120*gravityDirection*dt*dt}let hipY=y-53+drop-bob,lean=vx*.025+(crouch?facing*9:0);target('hips',x,hipY,40,dt);target('chest',x+lean,hipY-38,40,dt);target('neck',x+lean+facing*2,hipY-51,38,dt);target('head',x+lean+facing*3,hipY-66,33,dt);for(const side of ['L','R']){let s=side==='L'?-1:1;target('hip'+side,x+s*5,hipY,40,dt);target('shoulder'+side,x+lean+s*11,hipY-38,40,dt);let swing=stride*s,footX=x+s*5+swing*19,footY=onGround?y-3-Math.max(0,swing)*13:y-6+(s===1?-9:0);if(crouch&&onGround){footX=x+s*18;footY=y-3}target('foot'+side,footX,footY,32,dt);let hip=nodes['hip'+side],foot=nodes['foot'+side],mx=(hip.x+foot.x)/2,my=(hip.y+foot.y)/2;let dist=Math.hypot(foot.x-hip.x,foot.y-hip.y),bend=Math.sqrt(Math.max(0,27*27-dist*dist/4));target('knee'+side,mx+facing*bend,my,24,dt);let shoulder=nodes['shoulder'+side],handX=shoulder.x-swing*17+facing*2,handY=shoulder.y+48-Math.abs(swing)*5;if(!onGround){handX=shoulder.x-facing*14+s*9;handY=shoulder.y+31}if(side===(facing>0?'L':'R')&&mouse.active){const aim=Math.atan2(mouse.y-shoulder.y,mouse.x-shoulder.x);handX=shoulder.x+Math.cos(aim)*43;handY=shoulder.y+Math.sin(aim)*43}let elbowX=(shoulder.x+handX)/2-facing*5,elbowY=(shoulder.y+handY)/2;let armFollow=19;
+if(side===punch.side&&punch.time>0){
+const t=.30-punch.time;
+// Brief windup, quick extension, then retract the fist.
+const fullReach=52;let reach=t<.045?15:t<.10?15+(t-.045)/.055*(fullReach-15):t<.19?fullReach:fullReach-(t-.19)/.11*29;
+handX=shoulder.x+Math.cos(punch.angle)*reach;handY=shoulder.y+Math.sin(punch.angle)*reach;
+const along=(reach*reach+27*27-25*25)/(2*reach),bend=Math.sqrt(Math.max(0,27*27-along*along));
+elbowX=shoulder.x+Math.cos(punch.angle)*along-Math.sin(punch.angle)*bend;
+elbowY=shoulder.y+Math.sin(punch.angle)*along+Math.cos(punch.angle)*bend;armFollow=95;
+}
+target('hand'+side,handX,handY,armFollow,dt);target('elbow'+side,elbowX,elbowY,punch.time>0&&side===punch.side?60:22,dt)}for(let iteration=0;iteration<7;iteration++){for(const l of links){let a=nodes[l.a],b=nodes[l.b],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,correction=(d-l.len)/d*.5;a.x+=dx*correction;a.y+=dy*correction;b.x-=dx*correction;b.y-=dy*correction}for(const n of Object.values(nodes))if(n.y>ground-2&&!portalOpening('floor',x,y-68))n.y=ground-2}// Hold the actual joint positions at full reach, so smoothing cannot leave the elbow bent.
+if(punch.time>0){const t=.30-punch.time;if(t>=.10&&t<=.19){
+const shoulder=nodes['shoulder'+punch.side],elbow=nodes['elbow'+punch.side],hand=nodes['hand'+punch.side];
+elbow.x=shoulder.x+Math.cos(punch.angle)*27;elbow.y=shoulder.y+Math.sin(punch.angle)*27;
+hand.x=shoulder.x+Math.cos(punch.angle)*52;hand.y=shoulder.y+Math.sin(punch.angle)*52;
+}}
+tryPunchSpider();tryPunchCreatures();
+const head=nodes.head,neck=nodes.neck;let desired=0;if(mouse.active){let dx=(mouse.x-neck.x)*facing,dy=mouse.y-neck.y;if(Math.hypot(dx,dy)>3)desired=Math.max(-Math.PI*40/180,Math.min(Math.PI*35/180,Math.atan2(dy,dx)))}headAngle+=(desired-headAngle)*(1-Math.exp(-15*dt));let px=0,py=0;if(mouse.active){const dx=(mouse.x-head.x)*facing,dy=mouse.y-head.y,cos=Math.cos(headAngle),sin=Math.sin(headAngle);const lx=dx*cos+dy*sin-5,ly=-dx*sin+dy*cos+3,d=Math.hypot(lx,ly)||1;px=lx/d*1.7;py=ly/d*1.5}const follow=1-Math.exp(-20*dt);pupilX+=(px-pupilX)*follow;pupilY+=(py-pupilY)*follow}
+function line(a,b,w,color){g.strokeStyle=color;g.lineWidth=w;g.lineCap='round';g.beginPath();g.moveTo(a.x,a.y);g.lineTo(b.x,b.y);g.stroke()}
+function rod(a,b,back=false){a=nodes[a];b=nodes[b];line(a,b,7,'#11191e');line(a,b,4,back?'#727e80':'#aeb6b3');line({x:a.x-1,y:a.y},{x:b.x-1,y:b.y},1,back?'#9da4a0':'#d9ded6')}
+function joint(id,r=4){const n=nodes[id];g.fillStyle='#11191d';g.beginPath();g.arc(n.x,n.y,r+1,0,Math.PI*2);g.fill();g.fillStyle='#909891';g.beginPath();g.arc(n.x,n.y,r,0,Math.PI*2);g.fill();g.fillStyle='#333d40';g.beginPath();g.arc(n.x,n.y,1.6,0,Math.PI*2);g.fill()}
+function wire(a,b,color,offset=0){a=nodes[a];b=nodes[b];let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,nx=-dy/d,ny=dx/d;g.strokeStyle=color;g.lineWidth=1.1;g.beginPath();g.moveTo(a.x+nx*offset,a.y+ny*offset);g.bezierCurveTo(a.x+dx*.3+nx*(offset+5),a.y+dy*.3+ny*(offset+5),a.x+dx*.7-nx*4,a.y+dy*.7-ny*4,b.x+nx*offset,b.y+ny*offset);g.stroke()}
+function foot(id,back=false){
+const n=nodes[id],knee=nodes[id.replace('foot','knee')];
+// Keep the sole level on the ground; let the ankle flex while airborne.
+let tilt=onGround&&n.y>ground-8?0:Math.max(-.28,Math.min(.28,(n.x-knee.x)*.016))*facing;
+let soleY=Math.min(n.y,ground-4);
+g.save();g.translate(n.x,soleY);g.scale(facing,1);g.rotate(tilt);
+const metal=back?'#758780':'#b4c4b8';
+g.fillStyle='#18262a';g.beginPath();roundedRect(-8,-7,19,11,3);g.fill();
+g.fillStyle=metal;g.beginPath();roundedRect(-7,-6,17,8,2);g.fill();
+// Heel, instep plate, and separate mechanical toes.
+g.fillStyle=back?'#4b625a':'#758e7f';g.fillRect(-7,-5,5,6);
+g.fillStyle=back?'#99aaa0':'#d5ded0';g.beginPath();roundedRect(-2,-5,10,4,1);g.fill();
+for(let i=0;i<3;i++){
+const toeY=-4+i*2.4,len=[8,6.5,5][i];
+g.fillStyle='#1e3030';g.beginPath();roundedRect(7,toeY,len,2.2,.8);g.fill();
+g.fillStyle=metal;g.fillRect(8,toeY+.25,len-1,1.4);
+g.fillStyle='#597567';g.fillRect(11,toeY+.25,.7,1.4);
+}
+g.fillStyle='#2c3d39';g.beginPath();roundedRect(-8,2,23,2,1);g.fill();
+g.fillStyle='#839c8b';g.beginPath();g.arc(0,-5,3,0,Math.PI*2);g.fill();
+g.fillStyle='#2c4039';g.beginPath();g.arc(0,-5,1.3,0,Math.PI*2);g.fill();
+g.restore();
+}
+function limbs(side,back){rod('hip'+side,'knee'+side,back);rod('knee'+side,'foot'+side,back);wire('hip'+side,'knee'+side,back?'#839156':'#bad568',2);wire('knee'+side,'foot'+side,'#bc8eaa',-2);joint('hip'+side,3);joint('knee'+side,4);foot('foot'+side,back)}
+function hand(side,back){const n=nodes['hand'+side],elbow=nodes['elbow'+side];g.save();g.translate(n.x,n.y);g.rotate(Math.atan2(n.y-elbow.y,n.x-elbow.x)-Math.PI/2);g.scale(facing,1);const metal=back?'#778782':'#bbc7be';
+if(side===punch.side&&punch.time>0){
+g.fillStyle='#172226';g.beginPath();roundedRect(-6,-3,12,12,3);g.fill();g.fillStyle=metal;g.beginPath();roundedRect(-5,-2,10,10,2);g.fill();
+for(let i=0;i<4;i++){g.fillStyle=back?'#99aba0':'#d0ddd0';g.fillRect(-4+i*2.4,5,1.8,2);}
+g.strokeStyle='#596f62';g.lineWidth=1;g.beginPath();g.moveTo(-3,1);g.lineTo(3,1);g.stroke();
+g.fillStyle='#8fa596';g.beginPath();roundedRect(3,0,3,6,1);g.fill();g.restore();joint('hand'+side,2.5);return;
+}
+g.fillStyle='#172226';g.beginPath();roundedRect(-5,-4,10,12,2);g.fill();g.fillStyle=metal;g.beginPath();roundedRect(-4,-3,8,10,2);g.fill();g.strokeStyle='#526860';g.lineWidth=1;g.strokeRect(-2,-1,4,5);for(let i=0;i<4;i++){let fx=-3+i*2.1,len=[5,7,6.5,4.5][i],curl=.8+Math.sin(clock*3+i*.5)*.35;line({x:fx,y:7},{x:fx,y:7+len*.55},2.1,'#192728');line({x:fx,y:7},{x:fx,y:7+len*.55},1.3,metal);line({x:fx,y:7+len*.55},{x:fx-curl,y:7+len},1.6,metal);g.fillStyle='#536961';g.beginPath();g.arc(fx,7+len*.55,.8,0,Math.PI*2);g.fill()}line({x:4,y:0},{x:7,y:3},2.3,metal);line({x:7,y:3},{x:6,y:6},2,metal);g.fillStyle='#52675e';g.beginPath();g.arc(7,3,1,0,Math.PI*2);g.fill();g.restore();joint('hand'+side,2.5)}
+function arm(side,back){rod('shoulder'+side,'elbow'+side,back);rod('elbow'+side,'hand'+side,back);wire('shoulder'+side,'elbow'+side,'#d39dba',3);wire('elbow'+side,'hand'+side,back?'#888158':'#d9c775',-2);joint('shoulder'+side,4);joint('elbow'+side,3.8);hand(side,back)}
+let roomSized=false;
+function size(){const cw=c.clientWidth,ch=c.clientHeight,dpr=devicePixelRatio||1;if(c.width!==Math.round(cw*dpr)||c.height!==Math.round(ch*dpr)){c.width=Math.round(cw*dpr);c.height=Math.round(ch*dpr)}if(!roomSized){W=Math.max(700,cw);H=Math.max(500,ch);ground=H-105;roomSized=true;}g.setTransform(dpr*cw/W,0,0,dpr*ch/H,0,0)}
+function drawPlatformOne(p){g.fillStyle='#0003';g.fillRect(p.x+5,p.y+18,p.w,7);g.fillStyle='#354b55';g.fillRect(p.x,p.y,p.w,p.h);g.fillStyle='#8aa5a8';g.fillRect(p.x,p.y,p.w,3);g.fillStyle='#243841';g.fillRect(p.x,p.y+p.h-3,p.w,3);for(let i=12;i<p.w;i+=24){g.fillStyle='#718785';g.fillRect(p.x+i,p.y+8,3,3)}}
+function drawPlatform(){for(const p of roomPlatforms())drawPlatformOne(p)}
+function drawBackground(){g.fillStyle='#1d2832';g.fillRect(0,0,W,H);let gradient=g.createLinearGradient(0,0,0,ground);gradient.addColorStop(0,'#263440');gradient.addColorStop(1,'#17212a');g.fillStyle=gradient;g.fillRect(0,0,W,ground);g.strokeStyle='#a4c1ce06';g.lineWidth=1;for(let i=0;i<W;i+=64){g.beginPath();g.moveTo(i,0);g.lineTo(i,ground);g.stroke()}for(let i=0;i<ground;i+=64){g.beginPath();g.moveTo(0,i);g.lineTo(W,i);g.stroke()}g.fillStyle='#344b54';g.fillRect(0,50,W,10);g.fillRect(8,50,10,ground-50);g.fillRect(W-18,50,10,ground-50);g.fillStyle='#81969a';g.fillRect(18,59,W-36,1);g.fillStyle='#364651';g.fillRect(0,ground,W,H-ground);g.fillStyle='#6c838d';g.fillRect(0,ground,W,3);drawPlatform();g.fillStyle='#0004';g.beginPath();g.ellipse(x,ground+5,24,5,0,0,Math.PI*2);g.fill();}
+function drawRobot(){if(robotErased&&!drawingDuplicate)return;g.save();g.translate(x,y-68);g.rotate(robotRotation);g.translate(-x,-(y-68));const back=facing>0?'L':'R',front=back==='L'?'R':'L';limbs(back,true);arm(back,true);drawGun();const hips=nodes.hips,chest=nodes.chest;g.save();g.translate((hips.x+chest.x)/2,(hips.y+chest.y)/2);g.rotate(Math.atan2(chest.y-hips.y,chest.x-hips.x)+Math.PI/2);g.strokeStyle='#a7aeaa';g.lineWidth=3;g.strokeRect(-10,-19,20,37);g.fillStyle='#202a2b';g.fillRect(-2,-20,4,40);for(let i=-16;i<20;i+=7){g.fillStyle='#c0c0ad';g.fillRect(-4,i,8,3)}g.fillStyle='#405545';g.fillRect(-9,-13,17,16);g.fillStyle='#161e1e';g.fillRect(-4,-9,7,7);g.fillStyle='#bcbfa1';for(let i=0;i<4;i++)g.fillRect(-7+i*4,-1,2,2);g.strokeStyle='#b684a4';g.lineWidth=1.2;g.beginPath();g.moveTo(-10,-18);g.bezierCurveTo(-18,2,13,0,8,20);g.stroke();g.strokeStyle='#d2c785';g.beginPath();g.moveTo(9,-15);g.bezierCurveTo(17,5,-14,15,-7,20);g.stroke();g.strokeStyle='#a7c177';g.beginPath();g.moveTo(-7,-10);g.bezierCurveTo(-4,5,17,11,5,20);g.stroke();g.fillStyle='#929b95';g.fillRect(-13,16,26,6);g.restore();rod('chest','neck');rod('neck','head');wire('chest','head','#c191a8',3);joint('neck',3);limbs(front,false);const head=nodes.head;g.save();g.translate(head.x,head.y);g.scale(facing,1);g.rotate(headAngle);g.fillStyle='#25343a';g.beginPath();roundedRect(-23,-17,37,33,5);g.fill();g.fillStyle='#526361';g.beginPath();roundedRect(-18,-18,42,34,4);g.fill();g.strokeStyle='#99aaa0';g.lineWidth=1;g.stroke();g.fillStyle='#293f40';g.fillRect(-22,-10,5,20);g.strokeStyle='#111f26';g.lineWidth=1;for(let i=0;i<5;i++){g.beginPath();g.moveTo(-22,-7+i*3);g.lineTo(-18,-7+i*3);g.stroke()}g.strokeStyle='#9bafa3';g.lineWidth=1.6;g.beginPath();g.moveTo(-4,-18);g.lineTo(-12,-30);g.moveTo(-4,-18);g.lineTo(7,-29);g.stroke();g.fillStyle='#d1dac5';for(const a of [{x:-12,y:-30},{x:7,y:-29}]){g.beginPath();g.arc(a.x,a.y,2,0,Math.PI*2);g.fill()}g.fillStyle='#0d1a1c';g.beginPath();roundedRect(-14,-14,29,25,5);g.fill();let screen=g.createLinearGradient(0,-13,0,10);screen.addColorStop(0,'#193c3c');screen.addColorStop(1,'#112628');g.fillStyle=screen;g.beginPath();roundedRect(-12,-12,25,21,4);g.fill();g.shadowColor='#98e5b9';g.shadowBlur=5;for(const ex of [-5,6]){g.fillStyle='#b7e7c0';g.beginPath();roundedRect(ex-3,-7,6,8,2);g.fill();g.fillStyle='#173f36';g.beginPath();g.ellipse(ex+pupilX*.85,-3+pupilY,1.2,2,0,0,Math.PI*2);g.fill()}g.strokeStyle='#a5d8b8';g.lineWidth=1.3;g.beginPath();g.moveTo(-4,5);g.lineTo(5,5);g.stroke();g.shadowBlur=0;g.save();g.beginPath();roundedRect(-12,-12,25,21,4);g.clip();g.fillStyle='#b6eac609';for(let i=-11;i<10;i+=2)g.fillRect(-12,i,25,.5);g.fillStyle='#e8f5db10';g.beginPath();g.moveTo(-12,-12);g.lineTo(1,-12);g.lineTo(-10,9);g.lineTo(-12,9);g.fill();g.restore();for(const cy of [-6,2]){g.fillStyle='#192b2e';g.beginPath();g.arc(19,cy,2.8,0,Math.PI*2);g.fill();g.strokeStyle='#adbaaa';g.lineWidth=.8;g.beginPath();g.moveTo(18,cy-1);g.lineTo(20,cy+1);g.stroke()}g.fillStyle='#b9db91';g.beginPath();g.arc(19,10,1.3,0,Math.PI*2);g.fill();g.restore();arm(front,false);g.restore();}
+function draw(){drawBackground();drawPortalViews();g.save();clipRoom();drawSpider();drawFoodCrumbs();drawPopcorn();drawSushi();drawPancake();drawRayCrashEffects();drawFrog();drawGrapple();drawRobot();drawDuplicates();g.restore();drawCrossingParts();drawPortals();drawGlitchPortal();g.fillStyle="#8299a6";g.font="12px system-ui";g.fillText("Creatures: "+(activeCreatureLineup.length?activeCreatureLineup.map(name=>({cake:"Cake spider",popcorn:"Popcorn",pancake:"Pancake ray",sushi:"Sushi"}[name])).join(" + "):"Test area"),20,28);if(spawnPopcornAnts)g.fillText('Popcorn: '+popcorn.grains.length,W-130,28);if(spawnCakeSpider)g.fillText('Cake: '+spider.chunks+'/'+spider.maxChunks,W-270,28)}
+// Initialize from the actual viewport before placing the robot.
+size();y=ground;x=Math.min(380,W/2);setup();rollCreatureLineup();resetPopcorn();spawnSushi();spawnPancake();spawnFrog();
+let physicsAccumulator=0;
+const physicsStep=1/60;
+function resetFrameTiming(){physicsAccumulator=0;last=0;}
+window.addEventListener('blur',resetFrameTiming);window.addEventListener('focus',resetFrameTiming);document.addEventListener('visibilitychange',resetFrameTiming);
+function frame(t){const dt=last?Math.max(0,Math.min(.25,(t-last)/1000)):physicsStep;last=t;
+if(document.hidden){physicsAccumulator=0;requestAnimationFrame(frame);return;}
+physicsAccumulator+=dt;
+const oldGround=ground;size();
+if(oldGround!==ground){portals.green=portals.purple=null;releaseHook();const shift=ground-oldGround;y+=shift;if(spider.ready)spider.y+=shift;for(const n of Object.values(nodes)){n.y+=shift;n.py+=shift}}
+while(physicsAccumulator+1e-9>=physicsStep){update(physicsStep);physicsAccumulator-=physicsStep;}draw();requestAnimationFrame(frame)}
+for(const button of document.querySelectorAll('[data-control]')){
+const code=button.dataset.control;
+button.addEventListener('pointerdown',e=>{e.preventDefault();button.setPointerCapture(e.pointerId);c.focus();press(code);if(code==='Space')for(const clone of [...duplicates])withDuplicate(clone,()=>{if(onGround&&!robotErased){vy=-410*gravityDirection;onGround=false}})});
+for(const type of ['pointerup','pointercancel','lostpointercapture'])button.addEventListener(type,()=>{keys[code]=false});
+}
+gunStatus();
+c.addEventListener('pointerdown',e=>{
+if(e.button!==0&&e.button!==2)return;aimAt(e);
+for(const clone of [...duplicates])withDuplicate(clone,()=>{if(e.button===0)startPunch();else if(equippedGun==='portal')firePortal();else fireHook()});
+});
+document.addEventListener('keydown',e=>{
+if(e.repeat)return;
+for(const clone of [...duplicates])withDuplicate(clone,()=>{if(ragdoll.active){recoverRagdoll();return}if(keyCode(e)==='Space'&&onGround&&!robotErased){vy=-410*gravityDirection;onGround=false}});
+},true);
+document.getElementById('restart').addEventListener('click',()=>{restartGame();c.focus()});
+c.focus();requestAnimationFrame(frame);
+</script></body></html>
