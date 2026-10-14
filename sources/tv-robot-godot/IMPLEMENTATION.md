@@ -32,3 +32,14 @@ A clean Web export is shared on the implementation branch under `games/tv-robot-
 Independent audit follow-up: gameplay mouse presses now use unhandled input so HUD clicks do not punch/fire. Hook flight checks live swept segments each tick; a target selected by aim that moves out of the projectile path is not automatically acquired. Regression fixtures cover moving-target evasion, stationary/colony acquisition and HUD versus world pointer input. Portrait mode preserves geometry/aim but letterboxes and has small touch controls; phone-friendly play is not claimed.
 
 Audit record: an unseeded rerun of the 25-second sushi ceiling check failed to observe arrival. Random wandering and reversals do not guarantee that deadline in the reference game. That failed run remains a failure, not a pass. The capability assertion now uses a documented seed-1 trajectory; it checks that climbing works under that reproducible input, not that all random trajectories reach the ceiling in 25 seconds. The colony/ecology test RNG is also initialized deterministically. Gameplay randomness is unchanged.
+
+## Grapple report follow-up — 2026-10-14
+
+The reported nonworking grapple remains unresolved: the implementation inspection and controlled traces did not reproduce it. Gameplay source at `ec36645` matches the published gameplay source inspected for this investigation. No gameplay changes or rebuilt export were made.
+
+- Native traces exercised ceiling, both walls and floor; firing, attachment and winch displacement occurred. A diagonal swing can hit a wall and enter the existing impact-ragdoll/release path.
+- The existing hook-flight fixture passed evading-target rejection, stationary-target acquisition and popcorn acquisition/towing.
+- The expanded exported-browser fixture passed 18 checks in Chromium 154 using software WebGL, with no captured engine/browser errors. New coverage asserts ceiling acquisition, actual player lift, right-click release with retained momentum, upward coasting, refiring and R release. It reads snapshots and uses real browser input, not gameplay mutation.
+- An initial release-velocity assertion sampled after a browser automation round trip and failed its -40 cutoff (observed -25). The revised fixture observes the actual release transition inside the page and asserts upward velocity plus continued upward displacement; it passed. This fixes sampling of the short coast, not gameplay.
+
+Next diagnostic input: affected game link, device/browser and input method, and whether the failure is firing, attachment, pulling, or release. Desktop traces do not establish behavior on the affected device. Do not mark the original report resolved from these passes alone.

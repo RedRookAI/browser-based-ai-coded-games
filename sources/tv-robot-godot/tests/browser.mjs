@@ -22,6 +22,39 @@ try{
  await page.keyboard.down('s');await page.waitForTimeout(80);test('crouch pose state',(await state()).crouched);await page.keyboard.up('s');
  await page.mouse.click(120,100,{button:'right'});await page.waitForTimeout(700);test('right-click hook attaches',(await state()).hook_state==='attached',await state());await page.keyboard.press('r');await page.waitForTimeout(80);test('R releases hook',(await state()).hook_state==='idle');
  await page.keyboard.press('Enter');await page.waitForTimeout(100);test('restart returns spawn',Math.abs((await state()).player_feet.x-380)<3);
+ // Verify the full world-grapple cycle, not only its attached flag. The vertical
+ // lane at x=380 is clear of the platform and initial creature spawn positions.
+ await page.mouse.click(380,60,{button:'right'});
+ await page.waitForFunction(()=>window.__tv_robot_state.hook_state==='attached',{timeout:5000});
+ let attached=await state();test('ceiling grapple acquires world',attached.hook_target==='',attached);
+ await page.waitForFunction(()=>window.__tv_robot_state.player_feet.y<510,{timeout:5000});
+ let lifted=await state();test('ceiling winch lifts player',lifted.hook_state==='attached'&&!lifted.grounded&&lifted.player_velocity.y< -100,lifted);
+ // Sample the release transition inside the page: remote round-trip time under
+ // software rendering can consume the entire brief upward coast.
+ await page.evaluate(()=>{
+  window.__grappleReleaseProbe={};
+  const sample=()=>{
+   const s=window.__tv_robot_state,p=window.__grappleReleaseProbe;
+   if(s.hook_state==='idle'){
+    if(!p.first){p.first=structuredClone(s);p.until=performance.now()+250;p.minY=s.player_feet.y;}
+    p.minY=Math.min(p.minY,s.player_feet.y);
+    if(performance.now()>=p.until){p.done=true;return;}
+   }
+   requestAnimationFrame(sample);
+  };requestAnimationFrame(sample);
+ });
+ await page.mouse.click(380,60,{button:'right'});
+ await page.waitForFunction(()=>window.__grappleReleaseProbe.done,{timeout:5000});
+ let releaseProbe=await page.evaluate(()=>window.__grappleReleaseProbe);
+ test('right-click releases while retaining upward momentum',releaseProbe.first.player_velocity.y<0,releaseProbe);
+ test('released player coasts upward',releaseProbe.minY<releaseProbe.first.player_feet.y,releaseProbe);
+ await page.mouse.click(380,60,{button:'right'});
+ await page.waitForFunction(()=>window.__tv_robot_state.hook_state==='attached',{timeout:5000});
+ test('grapple fires and attaches again after release',(await state()).hook_state==='attached');
+ await page.keyboard.press('r');await page.waitForFunction(()=>window.__tv_robot_state.hook_state==='idle',{timeout:2000});
+ test('R releases the second grapple',(await state()).hook_state==='idle');
+ await page.keyboard.press('Enter');await page.waitForTimeout(100);
+
  await page.mouse.click(620,660);await page.waitForTimeout(100);test('HUD movement button does not punch',(await state()).punch_phase<0,await state());
  await page.mouse.click(620,660,{button:'right'});await page.waitForTimeout(80);test('HUD right click does not grapple',(await state()).hook_state==='idle');
  await page.mouse.click(800,400);await page.waitForTimeout(80);test('normal world click still punches',(await state()).punch_phase>=0);
