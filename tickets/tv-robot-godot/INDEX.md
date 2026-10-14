@@ -31,3 +31,7 @@ Key tradeoff: a port can be playable while losing emergent creature/rope behavio
 Planning complete; gameplay implementation authorized. First actions: primary implementer builds QT-002/QT-003 on a feature branch; overseer independently prepares parity checks and audits milestones. Confirm each ticket only on observed acceptance evidence.
 
 Independent checks: [TEST-MATRIX.md](TEST-MATRIX.md). This matrix is planned coverage, not completed testing.
+
+## Current outcome
+
+QT-002/QT-003/QT-004 confirmed from audited revision0d93e9e; [audit findings and limitations](AUDIT.md). QT-005 remains in progress until public deployment and live inputs are verified.

@@ -31,3 +31,9 @@ Browser ability checks: `node tests/popcorn.mjs` with installed `playwright-core
 ## Godot toolchain preview
 
 [Lantern Trail qualification preview](games/godot-qualification/) validates the Godot browser export workflow. It is a setup sample, separate from the collection's authored game projects.
+
+## TV Robot — Godot
+
+[Play the Godot version](https://redrookai.github.io/browser-based-ai-coded-games/games/tv-robot-godot/) · [Editable source](sources/tv-robot-godot/) · [QuickTicket plan](tickets/tv-robot-godot/INDEX.md)
+
+Godot 4.7.2, Compatibility, non-threaded Web. Separate from the unchanged original HTML version. Desktop keyboard/mouse play is tested; portrait screens letterbox the scene and shrink touch controls. Target-device performance and physical touchscreen play remain untested.
