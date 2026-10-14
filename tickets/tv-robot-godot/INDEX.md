@@ -35,3 +35,7 @@ Independent checks: [TEST-MATRIX.md](TEST-MATRIX.md). This matrix is planned cov
 ## Current outcome
 
 QT-002/QT-003/QT-004 confirmed from audited revision0d93e9e; [audit findings and limitations](AUDIT.md). QT-005 remains in progress until public deployment and live inputs are verified.
+
+## Completed delivery — 2026-10-14
+
+All five tickets confirmed after independent audit, requested repairs and live verification. [Play the Godot version](https://redrookai.github.io/browser-based-ai-coded-games/games/tv-robot-godot/). Existing HTML version remains unchanged. See AUDIT.md for retained failures, actual evidence and device limitations.

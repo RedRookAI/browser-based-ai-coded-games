@@ -1,6 +1,6 @@
 # TV Robot Godot implementation
 
-Editable Godot 4.7.2 project; Compatibility renderer and non-threaded Web export. The existing HTML game is preserved. This is a first-pass port under active parity verification, not a completed release.
+Editable Godot 4.7.2 project; Compatibility renderer and non-threaded Web export. The existing HTML game is preserved. This port has completed the documented independent audit and browser release checks; see the QuickTicket audit record for scope and limitations.
 
 Input actions: `move_left`, `move_right`, `jump`, `crouch`, `run`, `punch`, `grapple`, `release_hook`, `restart_run`.
 
@@ -32,3 +32,7 @@ A clean Web export is shared on the implementation branch under `games/tv-robot-
 Independent audit follow-up: gameplay mouse presses now use unhandled input so HUD clicks do not punch/fire. Hook flight checks live swept segments each tick; a target selected by aim that moves out of the projectile path is not automatically acquired. Regression fixtures cover moving-target evasion, stationary/colony acquisition and HUD versus world pointer input. Portrait mode preserves geometry/aim but letterboxes and has small touch controls; phone-friendly play is not claimed.
 
 Audit record: an unseeded rerun of the 25-second sushi ceiling check failed to observe arrival. Random wandering and reversals do not guarantee that deadline in the reference game. That failed run remains a failure, not a pass. The capability assertion now uses a documented seed-1 trajectory; it checks that climbing works under that reproducible input, not that all random trajectories reach the ceiling in 25 seconds. The colony/ecology test RNG is also initialized deterministically. Gameplay randomness is unchanged.
+
+## Released audit outcome
+
+Independent oversight verified the repaired ragdoll restart, HUD event handling and live-flight hook collision, native creature capability checks, and18 real-input local/live browser checks. All QuickTicket tickets are confirmed. The original HTML game remains available separately. Native audit fixtures are under the repository root tests/godot; detailed findings and preserved failures are in tickets/tv-robot-godot/AUDIT.md.

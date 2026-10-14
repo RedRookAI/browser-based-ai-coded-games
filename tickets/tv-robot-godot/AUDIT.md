@@ -15,4 +15,10 @@ Audited gameplay/export revision: 0d93e9e. Primary implementer supplied source a
 
 Export tested with Chromium and SwiftShader software WebGL, not a claim about target-device FPS. Portrait mode letterboxes and has small touch controls; phone-friendly play is not claimed. Fixtures exercise controlled native states separately from real browser input. Disabled portal/glitch/frog features remain disabled rather than becoming new scope. The existing HTML game remains intact.
 
-All three confirmed audit defects (ragdoll restart collision, HUD punch leakage, moving-target auto-lock) are repaired and independently verified. Public deployment verification is the remaining delivery step.
+All three confirmed audit defects (ragdoll restart collision, HUD punch leakage, moving-target auto-lock) are repaired and independently verified. Public deployment verification is completed below.
+
+## Final delivery
+
+The directed capability test was made reproducible in ec36645 without gameplay or export changes; overseer rerun22/22 passes. Previous unseeded failure is retained above. Public release31c86fc serves the exact audited export; HTML/JS/PCK/WASM hashes match. The same18 real-input checks pass on the public HTTPS page. All five QuickTicket tickets are confirmed within the stated scope and device limitations.
+
+[Play TV Robot — Godot](https://redrookai.github.io/browser-based-ai-coded-games/games/tv-robot-godot/)
