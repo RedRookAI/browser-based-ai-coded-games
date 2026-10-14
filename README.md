@@ -21,3 +21,7 @@ GitHub Pages publishes the `main` branch from the repository root. Keep private 
 Controls: A/D or arrow keys to walk, Space to jump, S to crouch, Shift to run, left click to punch, right click to grapple/release, R to release. Restart resets the room. The canvas scales a fixed logical room when resized.
 
 2026-10-14 maintenance: fixed frame-rate slowdown, simultaneous Shift handling, resize consistency, stale sushi rope tension, and cake grapple/platform collision. Checked in a disposable Chromium browser with software rendering; device-specific performance and physical touch remain untested.
+
+## Godot toolchain preview
+
+[Lantern Trail qualification preview](games/godot-qualification/) validates the Godot browser export workflow. It is a setup sample, separate from the collection's authored game projects.
