@@ -35,11 +35,11 @@ Audit record: an unseeded rerun of the 25-second sushi ceiling check failed to o
 
 ## Grapple report follow-up — 2026-10-14
 
-The reported nonworking grapple remains unresolved: the implementation inspection and controlled traces did not reproduce it. Gameplay source at `ec36645` matches the published gameplay source inspected for this investigation. No gameplay changes or rebuilt export were made.
+The reported nonworking grapple was initially unresolved: the implementation inspection and controlled traces did not reproduce it. Gameplay source at `ec36645` matches the published gameplay source inspected for this investigation. No gameplay changes or rebuilt export were made.
 
 - Native traces exercised ceiling, both walls and floor; firing, attachment and winch displacement occurred. A diagonal swing can hit a wall and enter the existing impact-ragdoll/release path.
 - The existing hook-flight fixture passed evading-target rejection, stationary-target acquisition and popcorn acquisition/towing.
 - The expanded exported-browser fixture passed 18 checks in Chromium 154 using software WebGL, with no captured engine/browser errors. New coverage asserts ceiling acquisition, actual player lift, right-click release with retained momentum, upward coasting, refiring and R release. It reads snapshots and uses real browser input, not gameplay mutation.
 - An initial release-velocity assertion sampled after a browser automation round trip and failed its -40 cutoff (observed -25). The revised fixture observes the actual release transition inside the page and asserts upward velocity plus continued upward displacement; it passed. This fixes sampling of the short coast, not gameplay.
 
-Next diagnostic input: affected game link, device/browser and input method, and whether the failure is firing, attachment, pulling, or release. Desktop traces do not establish behavior on the affected device. Do not mark the original report resolved from these passes alone.
+Closed by user confirmation on 2026-10-14: the reporter retested the Godot version, confirmed the grapple works, and identified use of the wrong button in the earlier attempt. No gameplay repair or new deployment was needed. The diagnostic tests remain as regression coverage; closure is based on the user retest, not desktop test passes alone.
