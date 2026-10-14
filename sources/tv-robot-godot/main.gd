@@ -73,6 +73,9 @@ func _input(event:InputEvent)->void:
 		if event.is_action_pressed("jump"):jump()
 		if event.is_action_pressed("release_hook"):release_hook()
 		if event.is_action_pressed("restart_run"):restart()
+
+func _unhandled_input(event:InputEvent)->void:
+	# GUI buttons consume pointer presses before they reach gameplay actions.
 	if event is InputEventMouseButton&&event.pressed:
 		if event.button_index==MOUSE_BUTTON_LEFT:start_punch()
 		if event.button_index==MOUSE_BUTTON_RIGHT:fire_hook()
@@ -124,14 +127,15 @@ func start_punch()->void:
 func fire_hook()->void:
 	if ragdoll_active:return
 	if hook.state!="idle":release_hook();return
-	var origin=robot.gun_hand();var end=origin+(aim-origin).normalized()*2500
+	var origin=robot.gun_hand()
+	if aim.distance_to(origin)<2:return
+	var end=origin+(aim-origin).normalized()*2500
 	var solid=world.ray_world(origin,end)
-	var creature_hit=creatures.ray_target(origin,solid.p if !solid.is_empty() else end)
-	if solid.is_empty()&&creature_hit.is_empty():return
-	hook.target=creature_hit.id if !creature_hit.is_empty() else ""
-	hook.end=creature_hit.point if !creature_hit.is_empty() else solid.p
+	# Aim is fixed at launch; targets are detected along the live flight segment each tick.
+	hook.target="";hook.world_hit=!solid.is_empty()
+	hook.end=solid.p if hook.world_hit else end
 	hook.start=origin;hook.p=origin;hook.total=origin.distance_to(hook.end);hook.travel=0.0;hook.state="flying"
-	hook.offset=hook.end-creatures.target_position(hook.target) if !hook.target.is_empty() else Vector2.ZERO
+	hook.offset=Vector2.ZERO
 	status.text="Hook fired"
 
 func release_hook()->void:
@@ -143,8 +147,16 @@ func update_hook(dt:float)->void:
 	if hook.state=="idle":return
 	if !hook.target.is_empty()&&!creatures.has_target(hook.target):release_hook();return
 	if hook.state=="flying":
+		var old_position:Vector2=hook.p
 		hook.travel=minf(hook.total,hook.travel+1250*dt);hook.p=hook.start.lerp(hook.end,hook.travel/maxf(0.001,hook.total))
-		if hook.travel>=hook.total:hook.state="attached";hook.anchor=hook.end;hook.length=maxf(65,(feet()-Vector2(0,75)).distance_to(hook.anchor));status.text="Hook attached · Right click or R to release"
+		var hit=creatures.ray_target(old_position,hook.p)
+		if !hit.is_empty():
+			hook.target=hit.id;hook.anchor=hit.point;hook.offset=hit.point-creatures.target_position(hit.id);hook.state="attached"
+		elif hook.travel>=hook.total:
+			if !hook.get("world_hit",false):release_hook();return
+			hook.anchor=hook.end;hook.state="attached"
+		if hook.state=="attached":
+			hook.length=maxf(65,(feet()-Vector2(0,75)).distance_to(hook.anchor));status.text="Hook attached · Right click or R to release"
 	if hook.state!="attached":return
 	if !hook.target.is_empty():hook.anchor=creatures.target_position(hook.target)+hook.offset
 	hook.p=hook.anchor

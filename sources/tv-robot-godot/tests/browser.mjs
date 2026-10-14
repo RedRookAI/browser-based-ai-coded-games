@@ -22,6 +22,10 @@ try{
  await page.keyboard.down('s');await page.waitForTimeout(80);test('crouch pose state',(await state()).crouched);await page.keyboard.up('s');
  await page.mouse.click(120,100,{button:'right'});await page.waitForTimeout(700);test('right-click hook attaches',(await state()).hook_state==='attached',await state());await page.keyboard.press('r');await page.waitForTimeout(80);test('R releases hook',(await state()).hook_state==='idle');
  await page.keyboard.press('Enter');await page.waitForTimeout(100);test('restart returns spawn',Math.abs((await state()).player_feet.x-380)<3);
+ await page.mouse.click(620,660);await page.waitForTimeout(100);test('HUD movement button does not punch',(await state()).punch_phase<0,await state());
+ await page.mouse.click(620,660,{button:'right'});await page.waitForTimeout(80);test('HUD right click does not grapple',(await state()).hook_state==='idle');
+ await page.mouse.click(800,400);await page.waitForTimeout(80);test('normal world click still punches',(await state()).punch_phase>=0);
+ await page.keyboard.press('Enter');await page.waitForTimeout(100);
  await page.screenshot({path:path.join(evidence,'desktop.png')});
  await page.setViewportSize({width:430,height:850});await page.mouse.move(215,425);await page.waitForTimeout(120);let narrow=await state();test('narrow resize keeps logical world',Math.abs(narrow.player_feet.x-380)<5);test('aim maps through stretch',Math.abs(narrow.aim.x-500)<5&&Math.abs(narrow.aim.y-350)<5,narrow.aim);await page.screenshot({path:path.join(evidence,'narrow.png')});
  test('no engine/browser errors',errors.length===0,errors);
