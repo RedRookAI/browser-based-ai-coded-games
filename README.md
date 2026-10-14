@@ -22,6 +22,12 @@ Controls: A/D or arrow keys to walk, Space to jump, S to crouch, Shift to run, l
 
 2026-10-14 maintenance: fixed frame-rate slowdown, simultaneous Shift handling, resize consistency, stale sushi rope tension, and cake grapple/platform collision. Checked in a disposable Chromium browser with software rendering; device-specific performance and physical touch remain untested.
 
+### Popcorn colony
+
+Popcorn lineups start with 45 ants. A connected colony can stretch toward varied floor, wall, ceiling, and enabled platform positions. The sum of its available body links limits reach; overlong attempts stretch only to capacity and collapse into loose physics. Grappling cancels the formation, and released ants regroup. Lost or separated members reduce the available reach.
+
+Browser ability checks: `node tests/popcorn.mjs` with installed `playwright-core`. Optional environment variables: `PLAYWRIGHT_MODULE`, `BROWSER_EXECUTABLE`, and `GAME_EVIDENCE`. Tests use controlled population/geometry fixtures alongside real pointer grapple inputs; they do not establish physical touchscreen behavior.
+
 ## Godot toolchain preview
 
 [Lantern Trail qualification preview](games/godot-qualification/) validates the Godot browser export workflow. It is a setup sample, separate from the collection's authored game projects.

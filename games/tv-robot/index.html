@@ -32,22 +32,49 @@ activeCreatureLineup=[...options[Math.floor(Math.random()*options.length)]];
 spawnCakeSpider=activeCreatureLineup.includes("cake");spawnPopcornAnts=activeCreatureLineup.includes("popcorn");spawnPancakeRay=activeCreatureLineup.includes("pancake");spawnSushiCaterpillar=activeCreatureLineup.includes("sushi");spawnGummyFrog=false;
 }
 const foodCrumbs=[];
-const popcorn={grains:[],mode:'pile',level:'floor',centerX:140,targetX:230,timer:4,progress:0,travel:0,bridge:null,panic:false};
+const popcorn={anchor:null,failedReach:null,grains:[],mode:'pile',level:'floor',centerX:140,targetX:230,timer:4,progress:0,travel:0,bridge:null,panic:false};
 function resetPopcorn(){
-popcorn.mode='pile';popcorn.releaseTimer=0;popcorn.level='floor';popcorn.centerX=Math.min(140,W*.2);popcorn.targetX=popcorn.centerX+90;popcorn.timer=4;popcorn.progress=0;popcorn.travel=0;popcorn.bridge=null;popcorn.panic=false;
-popcorn.grains=Array.from({length:spawnPopcornAnts?25:0},(_,id)=>({id,x:popcorn.centerX+(id%7-3)*11,y:ground-7-Math.floor(id/7)*10,vx:0,vy:0,r:5.3+(id%4)*.45,lobes:3+id%3,shape:id*.79,tint:id%5,eye:id%4,rotation:0,seed:(id*37%101)/101,path:[],pathTimer:0,regrouping:false}));
+popcorn.anchor={kind:'floor',x:Math.min(140,W*.2),y:ground-8,nx:0,ny:-1};popcorn.failedReach=null;popcorn.mode='pile';popcorn.releaseTimer=0;popcorn.level='floor';popcorn.centerX=Math.min(140,W*.2);popcorn.targetX=popcorn.centerX+90;popcorn.timer=4;popcorn.progress=0;popcorn.travel=0;popcorn.bridge=null;popcorn.panic=false;
+popcorn.grains=Array.from({length:spawnPopcornAnts?45:0},(_,id)=>({id,x:popcorn.centerX+(id%7-3)*11,y:ground-7-Math.floor(id/7)*10,vx:0,vy:0,r:5.3+(id%4)*.45,lobes:3+id%3,shape:id*.79,tint:id%5,eye:id%4,rotation:0,seed:(id*37%101)/101,path:[],pathTimer:0,regrouping:false}));
+}
+// Reach is the sum of the links available in the currently connected group.
+function popcornReach(group){let reach=0;for(let i=1;i<group.length;i++)reach+=(group[i-1].r+group[i].r)*1.12;return reach;}
+function popcornSurface(kind,position,index=0){
+if(kind==='platform'){const p=roomPlatforms()[index];return {kind,index,x:Math.max(p.x+20,Math.min(p.x+p.w-20,position)),y:p.y-12,nx:0,ny:-1};}
+if(kind==='left'||kind==='right')return {kind,x:kind==='left'?34:W-34,y:Math.max(100,Math.min(ground-45,position)),nx:kind==='left'?1:-1,ny:0};
+return {kind,x:Math.max(65,Math.min(W-65,position)),y:kind==='ceiling'?75:ground-8,nx:0,ny:kind==='ceiling'?1:-1};
+}
+function nearestPopcornSurface(point){
+const surfaces=[popcornSurface('floor',point.x),popcornSurface('ceiling',point.x),popcornSurface('left',point.y),popcornSurface('right',point.y),...roomPlatforms().map((p,i)=>popcornSurface('platform',point.x,i))];
+return surfaces.sort((a,b)=>Math.hypot(a.x-point.x,a.y-point.y)-Math.hypot(b.x-point.x,b.y-point.y))[0];
 }
 function popcornPoint(t){
-const route=popcorn.bridge,u=Math.max(0,Math.min(1,t));
-// A curved chain of separate creatures spans the gap; there is no player collider.
-return {x:route.ax+(route.bx-route.ax)*u+Math.sin(u*Math.PI)*route.bend,y:route.ay+(route.by-route.ay)*u};
+const route=popcorn.bridge;let distance=Math.max(0,Math.min(1,t))*route.length;
+for(let i=1;i<route.points.length;i++){const a=route.points[i-1],b=route.points[i],length=Math.hypot(b.x-a.x,b.y-a.y);if(distance<=length||i===route.points.length-1){const u=length?Math.min(1,distance/length):0;return {x:a.x+(b.x-a.x)*u,y:a.y+(b.y-a.y)*u};}distance-=length;}
+return {...route.points[0]};
 }
-function startPopcornBridge(){
-const p=middlePlatform(),right=cakeAlive()?spider.x<W/2:popcorn.centerX>W/2;
-const floorX=right?p.x+p.w+48:p.x-48,platformX=right?p.x+p.w-25:p.x+25;
-const fromFloor=popcorn.level==='floor';
-popcorn.bridge={ax:fromFloor?floorX:platformX,ay:fromFloor?ground-7:p.y-7,bx:fromFloor?platformX:floorX,by:fromFloor?p.y-7:ground-7,bend:right?20:-20,destination:fromFloor?'platform':'floor'};
-popcorn.mode='bridge';popcorn.progress=0;popcorn.travel=0;popcorn.timer=0;
+function collapsePopcorn(reason){
+const center=popcornCenter();popcorn.failedReach=reason;popcorn.mode='loose';popcorn.bridge=null;popcorn.progress=popcorn.travel=0;popcorn.releaseTimer=1.3;popcorn.timer=3;
+popcorn.anchor=nearestPopcornSurface(center);popcorn.centerX=center.x;popcorn.targetX=center.x;
+for(const grain of popcorn.grains){grain.regrouping=false;grain.path=[];}
+}
+function startPopcornBridge(destination=null){
+if(popcorn.mode==='towed'||popcorn.releaseTimer>0)return false;
+const group=popcornComponents()[0]||[];if(group.length<2)return false;
+const center={x:group.reduce((sum,g)=>sum+g.x,0)/group.length,y:group.reduce((sum,g)=>sum+g.y,0)/group.length};
+const origin=nearestPopcornSurface(center),maxR=Math.max(...group.map(g=>g.r));
+const candidates=destination?[destination]:[
+...roomPlatforms().map((p,i)=>popcornSurface('platform',p.x+20+Math.random()*(p.w-40),i)),
+popcornSurface('floor',65+Math.random()*(W-130)),popcornSurface('left',100+Math.random()*(ground-145)),popcornSurface('right',100+Math.random()*(ground-145)),popcornSurface('ceiling',65+Math.random()*(W-130))];
+const routes=[];
+for(const target of candidates){if(Math.hypot(target.x-origin.x,target.y-origin.y)<45)continue;
+const path=popcornRoute(origin,target,maxR+1);if(!path.length)continue;const points=[origin,...path];let length=0;for(let i=1;i<points.length;i++)length+=Math.hypot(points[i].x-points[i-1].x,points[i].y-points[i-1].y);routes.push({points,length,destination:target});}
+if(!routes.length){popcorn.timer=1;return false;}
+// Prefer feasible trips, but occasionally try a farther destination and visibly fall short.
+const feasible=routes.filter(route=>route.length<=popcornReach(group)),choices=feasible.length&&Math.random()<.8?feasible:routes;
+const route=choices[Math.floor(Math.random()*choices.length)];
+Object.assign(route,{members:group.map(g=>g.id),capacity:popcornReach(group),hold:0,blockedTime:0});
+popcorn.bridge=route;popcorn.anchor=origin;popcorn.mode='bridge';popcorn.progress=popcorn.travel=0;popcorn.timer=0;popcorn.failedReach=null;return true;
 }
 function popcornGround(g,oldY){
 if(g.y>ground-g.r){g.y=ground-g.r;g.vy=Math.min(0,g.vy)*-.1;g.vx*=.94}
@@ -59,7 +86,7 @@ g.x=Math.max(26+g.r,Math.min(W-26-g.r,g.x));g.y=Math.max(67+g.r,g.y);
 function popcornComponents(){
 const grains=popcorn.grains,seen=new Set(),groups=[];
 for(const grain of grains){if(seen.has(grain.id))continue;const group=[],queue=[grain];seen.add(grain.id);
-while(queue.length){const current=queue.pop();group.push(current);for(const other of grains){const threshold=(current.r+other.r)*10;if(!seen.has(other.id)&&Math.hypot(current.x-other.x,current.y-other.y)<=threshold){seen.add(other.id);queue.push(other)}}}
+while(queue.length){const current=queue.pop();group.push(current);for(const other of grains){const threshold=(current.r+other.r)*1.65;if(!seen.has(other.id)&&Math.hypot(current.x-other.x,current.y-other.y)<=threshold){seen.add(other.id);queue.push(other)}}}
 groups.push(group);
 }
 return groups.sort((a,b)=>b.length-a.length);
@@ -114,49 +141,66 @@ function collidePopcornRagdoll(){
 for(const n of Object.values(nodes))for(const grain of popcorn.grains){const dx=grain.x-n.x,dy=grain.y-n.y,d=Math.hypot(dx,dy)||1,limit=grain.r+4;if(d>=limit)continue;const nx=dx/d,ny=dy/d,depth=limit-d;grain.x+=nx*depth*.8;grain.y+=ny*depth*.8;n.x-=nx*depth*.2;n.y-=ny*depth*.2;grain.vx+=(n.x-n.px)*5;grain.vy+=(n.y-n.py)*5}
 }
 function updatePopcorn(dt){
-if(!popcorn.grains.length)return;
+if(!popcorn.grains.length){popcorn.bridge=null;popcorn.mode='pile';return;}
 popcorn.releaseTimer=Math.max(0,(popcorn.releaseTimer||0)-dt);
-const p=middlePlatform(),levelY=popcorn.level==='floor'?ground-14:p.y-14;
-const threat=cakeAlive()?Math.hypot(popcorn.centerX-spider.x,levelY-spider.y):Infinity;
-popcorn.panic=threat<230;if(popcorn.mode==='pile')popcorn.timer-=dt;
+if(popcorn.mode==='loose'&&popcorn.releaseTimer===0){const center=popcornCenter();popcorn.anchor=nearestPopcornSurface(center);popcorn.centerX=popcorn.anchor.x;popcorn.targetX=popcorn.anchor.nx?popcorn.anchor.y:popcorn.anchor.x;popcorn.mode='pile';}
+if(!popcorn.anchor)popcorn.anchor=nearestPopcornSurface(popcornCenter());
+let anchor=popcorn.anchor;
+const threat=cakeAlive()?Math.hypot(anchor.x-spider.x,anchor.y-spider.y):Infinity;
+popcorn.panic=threat<230;
 if(popcorn.mode==='pile'){
-const min=popcorn.level==='floor'?65:p.x+25,max=popcorn.level==='floor'?W-65:p.x+p.w-25;
-if(popcorn.panic){const away=popcorn.centerX>=spider.x?1:-1;popcorn.targetX=Math.max(min,Math.min(max,popcorn.centerX+away*180));
-if(Math.abs(popcorn.targetX-popcorn.centerX)<12&&popcorn.timer<1)startPopcornBridge();
-}else if(popcorn.timer<=0){startPopcornBridge()}
-const speed=popcorn.panic?140:58,delta=popcorn.targetX-popcorn.centerX;popcorn.centerX+=Math.sign(delta)*Math.min(Math.abs(delta),speed*dt);
-}else if(popcorn.mode==='bridge'){
-popcorn.progress=Math.min(1,popcorn.progress+dt*.65);
-if(popcorn.progress>=1){popcorn.timer+=dt;if(popcorn.timer>1.3)popcorn.travel+=dt*.42;}
-if(popcorn.travel>=1){popcorn.level=popcorn.bridge.destination;popcorn.centerX=popcorn.bridge.bx;popcorn.targetX=popcorn.level==='platform'?p.x+p.w/2:Math.max(65,Math.min(W-65,popcorn.centerX+(popcorn.centerX<W/2?-120:120)));popcorn.mode='pile';popcorn.timer=5+Math.random()*3;popcorn.bridge=null;}
+popcorn.timer-=dt;
+const p=anchor.kind==='platform'?roomPlatforms()[anchor.index]:null;
+const min=anchor.nx?100:p?p.x+20:65,max=anchor.nx?ground-45:p?p.x+p.w-20:W-65;
+const position=anchor.nx?anchor.y:anchor.x;
+if(popcorn.panic){const threatPosition=anchor.nx?spider.y:spider.x;popcorn.targetX=Math.max(min,Math.min(max,position+(position>=threatPosition?1:-1)*180));}
+const delta=popcorn.targetX-position,next=position+Math.sign(delta)*Math.min(Math.abs(delta),(popcorn.panic?140:58)*dt);
+if(anchor.nx)anchor.y=Math.max(min,Math.min(max,next));else anchor.x=Math.max(min,Math.min(max,next));popcorn.centerX=anchor.x;
+if(popcorn.timer<=0)startPopcornBridge();
+}
+if(popcorn.mode==='bridge'){
+const route=popcorn.bridge;
+const survivors=route.members.map(id=>popcorn.grains.find(g=>g.id===id)).filter(Boolean);
+const components=popcornComponents(),connected=components.find(group=>group.includes(survivors[0]))||[];
+const connectedMembers=survivors.filter(g=>connected.includes(g));
+route.capacity=popcornReach(connectedMembers);
+const limit=Math.min(1,route.capacity/route.length);
+if(connectedMembers.length<2||popcorn.progress>limit+.02||popcorn.travel>0&&limit<1){collapsePopcorn('Group lost the reach needed to hold the formation');}
+else{
+popcorn.progress=Math.min(limit,popcorn.progress+dt*155/route.length);
+if(limit<1&&popcorn.progress>=limit-1e-6){route.blockedTime+=dt;if(route.blockedTime>.55)collapsePopcorn('Destination beyond this group’s reach');}
+else if(popcorn.progress>=1){route.hold+=dt;if(route.hold>.8)popcorn.travel=Math.min(1,popcorn.travel+dt*155/route.length);}
+if(popcorn.mode==='bridge'&&popcorn.travel>=1){popcorn.anchor={...route.destination};anchor=popcorn.anchor;popcorn.level=anchor.kind;popcorn.centerX=anchor.x;const p=anchor.kind==='platform'?roomPlatforms()[anchor.index]:null;popcorn.targetX=anchor.nx?anchor.y:Math.max(p?p.x+20:65,Math.min(p?p.x+p.w-20:W-65,anchor.x+(Math.random()-.5)*150));popcorn.mode='pile';popcorn.timer=3+Math.random()*3;popcorn.bridge=null;}
+}
 }
 const groups=popcornComponents(),mainGroup=groups[0]||[];
-for(const [grainIndex,grain] of popcorn.grains.entries()){
-let target;
-if(popcorn.mode==='bridge'){
-const t=grainIndex/Math.max(1,popcorn.grains.length-1)*popcorn.progress+popcorn.travel;
-target=popcornPoint(t);if(t>1){target.x+=(grain.id%5-2)*9;target.y-=Math.floor(grain.id/5)*7;}
-}else{target={x:popcorn.centerX+(grain.id%7-3)*10.5,y:levelY-Math.floor(grain.id/7)*8.5};}
-const beingTowed=popcorn.mode==='towed'||popcorn.releaseTimer>0;
-const regroup=beingTowed?null:popcornRegroupTarget(grain,mainGroup,dt);if(regroup)target=regroup;if(beingTowed)target={x:grain.x,y:grain.y};
+const previousYs=new Map(popcorn.grains.map(grain=>[grain.id,grain.y]));
+anchor=popcorn.anchor;
+for(const grain of popcorn.grains){
+let target;const route=popcorn.bridge,index=route?route.members.indexOf(grain.id):-1;
+const forming=popcorn.mode==='bridge'&&index>=0;
+if(forming){const t=index/Math.max(1,route.members.length-1)*popcorn.progress+popcorn.travel;target=popcornPoint(t);if(t>1){const end=route.destination,along=(index%7-3)*10.5,inward=Math.floor(index/7)*8.5;target.x+=-end.ny*along+end.nx*inward;target.y+=end.nx*along+end.ny*inward;}}
+else{const along=(grain.id%7-3)*10.5,inward=Math.floor(grain.id/7)*8.5;target={x:anchor.x-anchor.ny*along+anchor.nx*inward,y:anchor.y+anchor.nx*along+anchor.ny*inward};}
+const loose=popcorn.mode==='towed'||popcorn.mode==='loose'||popcorn.releaseTimer>0;
+const regroup=loose||forming?null:popcornRegroupTarget(grain,mainGroup,dt);if(regroup)target=regroup;if(loose)target={x:grain.x,y:grain.y};
 const oldY=grain.y,dx=target.x-grain.x,dy=target.y-grain.y;
-grain.vx+=dx*(popcorn.mode==='bridge'?45:30)*dt;grain.vy+=dy*(popcorn.mode==='bridge'?70:40)*dt+360*dt;
-grain.vx*=Math.exp(-(beingTowed?.55:8)*dt);grain.vy*=Math.exp(-(beingTowed?.55:9)*dt);
+grain.vx+=dx*(forming?45:30)*dt;grain.vy+=dy*(forming?70:40)*dt+(loose?850:360)*dt;
+grain.vx*=Math.exp(-(loose?.55:8)*dt);grain.vy*=Math.exp(-(loose?.55:9)*dt);
 if(popcorn.mode==='pile'&&cakeAlive()){const ax=grain.x-spider.x,ay=grain.y-spider.y,d=Math.hypot(ax,ay)||1;if(d<100){grain.vx+=ax/d*(100-d)*5*dt;grain.vy+=ay/d*(100-d)*2*dt}}
 grain.x+=grain.vx*dt;grain.y+=grain.vy*dt;popcornGround(grain,oldY);grain.rotation=Math.sin(clock*5+grain.shape)*.12+grain.vx*.0015;
 }
-// Grains repel overlap but softly cling to nearby neighbors, like a living pile.
+// Keep individual bodies; a stretching chain is not a solid player platform.
 for(let iteration=0;iteration<3;iteration++){
 for(let i=0;i<popcorn.grains.length;i++)for(let j=i+1;j<popcorn.grains.length;j++){
 const a=popcorn.grains[i],b=popcorn.grains[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.01,min=(a.r+b.r)*.85;
 if(d<min){const f=(min-d)/d*.28;a.x-=dx*f;a.y-=dy*f;b.x+=dx*f;b.y+=dy*f}
-else if(popcorn.mode==='pile'&&d<20){const f=.004;a.x+=dx*f;b.x-=dx*f;a.y+=dy*f;b.y-=dy*f}
+else if(popcorn.mode==='pile'&&d<20){a.x+=dx*.004;b.x-=dx*.004;a.y+=dy*.004;b.y-=dy*.004;}
 }
-if(popcorn.mode==='bridge')for(let i=0;i<popcorn.grains.length-1;i++){
-const a=popcorn.grains[i],b=popcorn.grains[i+1],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,pa=popcornPoint(i/Math.max(1,popcorn.grains.length-1)),pb=popcornPoint((i+1)/Math.max(1,popcorn.grains.length-1)),limit=Math.max(13,Math.hypot(pb.x-pa.x,pb.y-pa.y)*1.12);
-if(d>limit){const f=(d-limit)/d*.32;a.x+=dx*f;a.y+=dy*f;b.x-=dx*f;b.y-=dy*f}
+if(popcorn.mode==='bridge'){const chain=popcorn.bridge.members.map(id=>popcorn.grains.find(g=>g.id===id)).filter(Boolean);
+for(let i=0;i<chain.length-1;i++){const a=chain[i],b=chain[i+1],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,limit=(a.r+b.r)*1.12;if(d>limit){const f=(d-limit)/d*.45;a.x+=dx*f;a.y+=dy*f;b.x-=dx*f;b.y-=dy*f;}}
 }
 }
+for(const grain of popcorn.grains)popcornGround(grain,previousYs.get(grain.id));
 }
 function drawPopcorn(){
 const creams=['#fff3cf','#eee4bd','#fff5de','#e9d9a8','#f3ecca'];
@@ -1154,9 +1198,7 @@ function attachPopcorn(hit){
 const center=popcornCenter();grapple.state='attached';grapple.target='popcorn';grapple.offsetX=hit.x-center.x;grapple.offsetY=hit.y-center.y;grapple.ax=grapple.x=hit.x;grapple.ay=grapple.y=hit.y;grapple.length=Math.max(65,routedLength());popcorn.mode='towed';popcorn.bridge=null;popcorn.releaseTimer=0;for(const g of popcorn.grains){g.regrouping=false;g.path=[]}
 document.getElementById('inputStatus').textContent='Popcorn colony hooked · Pulling all '+popcorn.grains.length;
 }
-function releasePopcornTow(){
-const center=popcornCenter(),p=middlePlatform();popcorn.mode='pile';popcorn.bridge=null;popcorn.level=Math.abs(center.y-p.y)<75&&center.x>p.x-30&&center.x<p.x+p.w+30?'platform':'floor';popcorn.centerX=center.x;popcorn.targetX=center.x;popcorn.timer=4;popcorn.releaseTimer=.85;
-}
+function releasePopcornTow(){collapsePopcorn('Grapple released the colony');}
 function pullPopcorn(dt){
 let center=popcornCenter();grapple.ax=center.x+grapple.offsetX;grapple.ay=center.y+grapple.offsetY;
 const oldLength=grapple.length;grapple.length=Math.max(65,grapple.length-175*dt);const reelSpeed=(oldLength-grapple.length)/dt;
