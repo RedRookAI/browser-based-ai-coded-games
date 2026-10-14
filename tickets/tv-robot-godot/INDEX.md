@@ -29,3 +29,5 @@ The user specifically requests a Godot port; reuse this maintained native engine
 Key tradeoff: a port can be playable while losing emergent creature/rope behavior; therefore integration and parity checks are required, not just export qualification. More detailed implementation choices stay with the primary implementer within the shared acceptance contract.
 
 Planning complete; gameplay implementation authorized. First actions: primary implementer builds QT-002/QT-003 on a feature branch; overseer independently prepares parity checks and audits milestones. Confirm each ticket only on observed acceptance evidence.
+
+Independent checks: [TEST-MATRIX.md](TEST-MATRIX.md). This matrix is planned coverage, not completed testing.
